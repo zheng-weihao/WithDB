@@ -95,14 +95,19 @@ namespace db {
 			return ret;
 		}
 
-		void put_from_file(const std::string &filename) {
+		void put_from_file(const std::string &filename, bool all_log = true) {
 			std::fstream fs(filename);
 			std::string row;
+			int counter = 0;
 			address result = 0;
 			while (std::getline(fs, row)) {
 				result = put(row, (result / PAGE_SIZE) * PAGE_SIZE);
-				std::cerr << "put log in address " << result << std::endl;
+				if (all_log) {
+					std::cerr << "put log in address " << result << std::endl;
+				}
+				++counter;
 			}
+			std::cerr << "put success, total = " << counter << std::endl;
 		}
 
 		std::string get(address addr) {
@@ -162,7 +167,6 @@ namespace db {
 					std::cout << get(p.addr + entry.index) << std::endl;
 					++counter;
 					if (br && counter % br == 0) {
-						char ch;
 						std::getchar();
 					}
 				}

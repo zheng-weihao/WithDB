@@ -15,6 +15,9 @@
 // replace: find item to kick, kick item, load new comer(if error recover to the time after kicking)
 // never know what will cause exception when handle insert
 // TODO: find lock-free structure or elegant way to lock
+// TOOD: only pin-unpin need lock, event_loop keep replace operation, is that true?
+// access is meanless, thread should pin their page when before access page
+// TODO: reader-writer problem in pin page
 namespace db {
 	template<typename Address>
 	struct cache_replace {

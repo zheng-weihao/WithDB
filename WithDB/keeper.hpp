@@ -60,7 +60,7 @@ namespace db {
 				other.pin_cnt = 0;
 				return *this;
 			}
-
+			// TODO: lock and unlock wrapper for reactivate and pin
 			// TODO: naive way to handle page access conflicts, use reader-writer model instead
 			bool is_pinned(bool myself = false) {
 				return myself ? pin_cnt > 0 : info->second.is_pinned(addr);
