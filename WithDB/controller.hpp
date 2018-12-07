@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <string>
+#include <sstream>
 
 // simple controller to wrap, almost crap
 namespace db {
@@ -13,7 +14,7 @@ namespace db {
 		std::shared_ptr<tuple_table> table;
 		keeper k;
 
-		controller(const char *path): k(path, false) {
+		controller(const char *path, bool trunc = false): k(path, trunc) {
 			table = std::make_shared<db::tuple_table>(db::tuple_table{
 				db::tuple_entry(db::INT_T),
 				db::tuple_entry(db::CHAR_T, 18),

@@ -155,14 +155,15 @@
   <ItemGroup>
     <ClInclude Include="cache.hpp" />
     <ClInclude Include="controller.hpp" />
+    <ClInclude Include="endian.hpp" />
     <ClInclude Include="keeper.hpp" />
-    <ClInclude Include="endian_function.hpp" />
     <ClInclude Include="page.hpp" />
     <ClInclude Include="drive.hpp" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="translator.hpp" />
     <ClInclude Include="tuple.hpp" />
-    <ClInclude Include="type_config.hpp" />
+    <ClInclude Include="definitions.hpp" />
+    <ClInclude Include="utils.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">

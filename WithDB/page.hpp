@@ -1,8 +1,8 @@
 #ifndef __PAGE_HPP__
 #define __PAGE_HPP__
 
-#include "endian_function.hpp"
-#include "type_config.hpp"
+#include "endian.hpp"
+#include "definitions.hpp"
 
 #include <iterator>
 #include <memory>
@@ -18,7 +18,6 @@ namespace db {
 
 		template<typename Iter>
 		using enable_if_random_iterator_t = std::enable_if_t<std::is_same_v<typename std::iterator_traits<Iter>::iterator_category, std::random_access_iterator_tag>>;
-
 	}
 
 	template<typename Iter, std::size_t Size = PAGE_SIZE,
@@ -120,7 +119,7 @@ namespace db {
 			if (b == e || first >= e - b) {
 				throw std::out_of_range("[basic_page::read] address fetch error or out of page range");
 			}
-			return read_value<Type>(b + first, e);
+			return read<Type>(b + first, e);
 		}
 
 		template<typename Type>

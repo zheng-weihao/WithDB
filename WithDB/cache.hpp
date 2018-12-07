@@ -2,7 +2,7 @@
 #define __CACHE_HPP__
 
 #include "page.hpp"
-#include "type_config.hpp"
+#include "definitions.hpp"
 
 #include <algorithm>
 #include <memory>

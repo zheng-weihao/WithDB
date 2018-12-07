@@ -1,9 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 15
-VisualStudioVersion = 15.0.28010.2050
+VisualStudioVersion = 15.0.28307.136
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "WithDB", "WithDB\WithDB.vcxproj", "{EF6A4D6D-4305-48B5-AD57-110C86EE55A1}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "CppTest", "..\tmp\CppTest\CppTest\CppTest\CppTest.vcxproj", "{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -21,11 +23,19 @@ Global
 		{EF6A4D6D-4305-48B5-AD57-110C86EE55A1}.Release|x64.Build.0 = Release|x64
 		{EF6A4D6D-4305-48B5-AD57-110C86EE55A1}.Release|x86.ActiveCfg = Release|Win32
 		{EF6A4D6D-4305-48B5-AD57-110C86EE55A1}.Release|x86.Build.0 = Release|Win32
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Debug|x64.ActiveCfg = Debug|x64
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Debug|x64.Build.0 = Debug|x64
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Debug|x86.ActiveCfg = Debug|Win32
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Debug|x86.Build.0 = Debug|Win32
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Release|x64.ActiveCfg = Release|x64
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Release|x64.Build.0 = Release|x64
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Release|x86.ActiveCfg = Release|Win32
+		{C1BA8B59-03AC-49CE-A7B5-B7FEC185EA26}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
-		SolutionGuid = {731B4C54-BF75-4B86-A11F-904CDB9867D4}
+		SolutionGuid = {F5BA5AFB-FF0E-4B58-9229-129BB1A226F4}
 	EndGlobalSection
 EndGlobal

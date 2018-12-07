@@ -2,7 +2,7 @@
 
 #include "endian_function.hpp"
 #include "keeper.hpp"
-#include "type_config.hpp"
+#include "definitions.hpp"
 
 #include <algorithm>
 #include <iterator>

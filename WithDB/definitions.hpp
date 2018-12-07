@@ -1,12 +1,53 @@
-#ifndef __TYPE_CONFIG_HPP__
-#define __TYPE_CONFIG_HPP__
+#pragma once
 
-#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <type_traits>
+#include <chrono>
 #include <random>
 #include <string>
 
 namespace db {
+	// get the complement of the check(enable_if) SFINAE type
+	template<typename Check, typename Type = void>
+	struct check_not { using type = Type; };
+	template<typename Check>
+	struct check_not<Check, std::void_t<typename Check::type>> {};
+	template<typename Check>
+	using check_not_t = typename check_not<Check>::type;
+	// TODO: figure out why the code here doesn't work in template partial specialization
+	/*template<typename Check>
+	struct complement<Check, typename Check::type> {};*/
+
+	// transfrom check SFINAE type to value
+	template<typename Check, typename Type = void>
+	struct check_value : std::false_type {};
+	template<typename Check>
+	struct check_value<Check, std::void_t<typename Check::type>> : std::true_type {};
+	template<typename Check>
+	using check_v = check_value<Check>::value;
+
+	// TODO: define switch structure for checking
+	// switch_type1_t<...Param>, switch_type2_t<...Param>, ..., switch_default_t<...Param>
+	// need a method to construct switch structure that have different template id to replace void_t below
+	// to simplify checking template parameters
+	/*template<typename Type, typename Iter>
+	struct switch_network_t : std::void_t<check_network_order_t<Type>, check_iterator_t<Type>> {};
+	template<typename Type, typename Iter>
+	struct switch_string_t : std::void_t<check_not_network_order_t<Type>, check_string_t<Type>, check_iterator_t<Iter>> {};
+	template<typename Type, typename Iter>
+	struct switch_default_t : std::void_t<check_not_network_order_t<Type>, check_not_string_t<Type>, check_iterator_t<Iter>> {};*/
+
+	// uint<Size> using for endian, might have other potential usage
+	template<std::size_t Size>
+	struct uint {};
+	template<> struct uint<1> { using type = std::uint8_t; };
+	template<> struct uint<2> { using type = std::uint16_t; };
+	template<> struct uint<4> { using type = std::uint32_t; };
+	template<> struct uint<8> { using type = std::uint64_t; };
+	template<std::size_t Size>
+	using uint_t = typename uint<Size>::type;
+
 	using timestamp = std::int64_t;
 	
 	using drive_address = std::uint64_t;
@@ -102,6 +143,6 @@ namespace db {
 			throw std::runtime_error("[default_segment_address] should not access here");
 		}
 	}
-}
 
-#endif // __TYPE_CONFIG_HPP__
+	// TODO: exception system
+}

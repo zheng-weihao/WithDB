@@ -3,7 +3,7 @@
 #include "cache.hpp"
 #include "drive.hpp"
 #include "page.hpp"
-#include "type_config.hpp"
+#include "definitions.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -133,7 +133,7 @@ namespace db {
 				auto offset = MAPPING_ENTRY_SIZE * i + MAPPING_TABLE_BEGIN;
 				auto shrink_key = read<shrink_mapping_key_address>(offset + MAPPING_ENTRY_KEY_POS) >> (8 * (sizeof(shrink_mapping_key_address) - MAPPING_ENTRY_KEY_SIZE));
 				auto value = read<drive_address>(offset + MAPPING_ENTRY_VALUE_POS) & ((1ll << MAPPING_ENTRY_VALUE_SIZE * 8) - 1);
-				// TODO: hack way for reading non-stdint data, need better type_config support
+				// TODO: hack way for reading non-stdint data, need better definitions support
 				mapping_table.emplace_back(
 					static_cast<address>(shrink_key) << PAGE_BIT_LENGTH,
 					value << PAGE_BIT_LENGTH
