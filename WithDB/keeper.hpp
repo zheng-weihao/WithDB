@@ -173,7 +173,7 @@ namespace db {
 			return _translator._name;
 		}
 
-		bool getSoft(address addr, Page &value) {
+		inline bool getSoft(address addr, Page &value) {
 			bool flag = false;
 			auto result = _translator(addr, flag);
 			if (flag) {
@@ -184,7 +184,7 @@ namespace db {
 			}
 		}
 
-		bool putSoft(address addr, Page &value) {
+		inline bool putSoft(address addr, Page &value) {
 			if (!value.isActive()) {
 				return false;
 			}
@@ -198,11 +198,11 @@ namespace db {
 		}
 
 		// dont auto load and save
-		virtual bool onInsert(address addr, Page &value) {
+		inline bool onInsert(address addr, Page &value) {
 			return getSoft(addr, value);
 		}
 
-		virtual bool onErase(address addr, Page &value) {
+		inline bool onErase(address addr, Page &value) {
 			return putSoft(addr, value);
 		}
 

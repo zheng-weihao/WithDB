@@ -154,6 +154,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="cache.hpp" />
+    <ClInclude Include="controller.hpp" />
     <ClInclude Include="drive.hpp" />
     <ClInclude Include="endian.hpp" />
     <ClInclude Include="keeper.hpp" />

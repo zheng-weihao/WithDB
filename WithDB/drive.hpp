@@ -548,7 +548,7 @@ namespace db {
 		inline void eraseSlave(DriveMasterPage &mpage, drive_address slave) { // TODO: verify
 		}
 
-		drive_address allocate(drive_address addr = 0) {
+		inline drive_address allocate(drive_address addr = 0) {
 			if (_masters.empty()) {
 				auto origin = _buffer.size();
 				_buffer.expand(ExpandSize);
@@ -560,7 +560,7 @@ namespace db {
 			return erase(addr);
 		}
 
-		void free(drive_address addr) {
+		inline void free(drive_address addr) {
 			insert(addr);
 			// TODO: shrink
 		}
@@ -651,12 +651,12 @@ namespace db {
 			}
 		}
 
-		drive_address allocate(drive_address addr = 0, bool system = false) {
+		inline drive_address allocate(drive_address addr = 0, bool system = false) {
 			// _entry._freeSize -= PAGE_SIZE; TODO: statistic disabled for now
 			return system ? _system.allocate(addr) : _user.allocate(addr);
 		}
 
-		void free(drive_address addr, bool system = false) {
+		inline void free(drive_address addr, bool system = false) {
 			// _entry._freeSize += PAGE_SIZE;
 			if (system) {
 				_system.free(addr);

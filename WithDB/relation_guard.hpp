@@ -28,11 +28,11 @@ namespace db {
 		bool _isComplete;
 		bool _isHead;
 		bool _isDeleted; // deleted
-		TupleEntry(page_address index = 0, page_address begin = PAGE_SIZE, page_address end = PAGE_SIZE, bool isComplete = true, bool isHead = true, bool isDeleted = false) :
+		inline TupleEntry(page_address index = 0, page_address begin = PAGE_SIZE, page_address end = PAGE_SIZE, bool isComplete = true, bool isHead = true, bool isDeleted = false) :
 			_index(index), _begin(begin), _end(end), _isComplete(isComplete), _isHead(isHead), _isDeleted(isDeleted) {
 		}
 
-		page_address size() {
+		inline page_address size() {
 			return _end - _begin;
 		}
 	};
@@ -207,19 +207,24 @@ namespace db {
 			orderByIndex();
 		}
 
+		inline page_address tupleSize(size_t pos) {
+			return _entries[pos]._end - _entries[pos]._begin;
+		}
+
 		// copy without checking outer layer should check
 		template<typename Iter,
 			ns::tuple::check_char_t<Iter> * = nullptr
-		> void copy_to(Iter out, size_t pos) {
+		> inline void copy_to(Iter out, size_t pos) {
 			reactivate(true);
 			for (auto i = _entries[pos]._begin; i != _entries[pos]._end; ++i) {
 				*out++ = read<char>(i);
 			}
 			unpin();
 		}
+
 		template<typename Iter,
 			ns::tuple::check_char_t<Iter> * = nullptr
-		> void copy_from(Iter in, size_t pos) {
+		> inline void copy_from(Iter in, size_t pos) {
 			reactivate(true);
 			for (auto i = _entries[pos]._begin; i != _entries[pos]._end; ++i) {
 				write(*in++, i);
@@ -229,9 +234,85 @@ namespace db {
 	};
 
 	struct RelationGuard {
+		constexpr static address SIZE_HYPER = 4;
+
+		constexpr static address pageAddress(address addr) {
+			return addr & ~(PAGE_SIZE - 1);
+		}
+		constexpr static page_address pageIndex(address addr) {
+			return static_cast<page_address>(addr & (PAGE_SIZE - 1));
+		}
+
+		Keeper &_keeper;
 		Relation &_relation;
+
+		inline RelationGuard(Keeper &keeper, Relation &relation) : _keeper(keeper), _relation(relation) {
+		}
+
+		inline Tuple fetch(address addr, TupleContainer &container) {
+			auto p = _keeper.hold<TuplePage>(pageAddress(addr));
+			auto result = p->fetch(pageIndex(addr));
+			if (result == p->_entries.size()) {
+				throw std::runtime_error("[RelationGuard::fetch]");
+			}
+			container.resize(p->tupleSize(result));
+			Tuple tuple(container, 0, container.size());
+			p->copy_to(tuple.begin(), result);
+			return tuple;
+		}
+
+		inline address allocate(Tuple &tuple) {
+			if (tuple.size() > PAGE_SIZE) { // TODO: support cross page tuple
+				throw std::runtime_error("[RelationGuard::allocate]");
+			}
+			auto ptr = _relation._ptr;
+			auto begin = _relation._begin, end = _relation._end, size = end - begin;
+			if (!size) {
+				_relation._end = end = SIZE_HYPER * PAGE_SIZE;
+				size = end - begin;
+			}
+			for (address i = 0; i != size; ++i) {
+				auto p = _keeper.hold<TuplePage>(ptr, true, false);
+				if (!p->load()) {
+					p->init();
+					++_relation._bCount;
+				}
+				auto result = p->allocate(static_cast<page_address>(tuple.size()));
+				if (result != p->_entries.size()) {
+					_relation._ptr = ptr;
+					++_relation._tCount;
+					p->copy_from(tuple.begin(), result);
+					return ptr + p->_entries[result]._index;
+				}
+				ptr += PAGE_SIZE;
+				if (ptr == end) {
+					if (size - size / SIZE_HYPER < _relation._bCount && size != _relation._capacity) {
+						size = std::max((size / 4 + size) & ~(PAGE_SIZE - 1), _relation._capacity);
+						end = begin + size;
+						_relation._end = size;
+					} else {
+						ptr = begin;
+					}
+				}
+			}
+			throw std::runtime_error("[RelationGuard::allocate]");
+		}
 		
-		void unionOp();
+		inline void free(address addr) {
+			auto p = _keeper.hold<TuplePage>(pageAddress(addr));
+			auto result = p->free(pageIndex(addr));
+			if (result == p->_entries.size()) {
+				throw std::runtime_error("[RelationGuard::free]");
+			}
+			--_relation._tCount;
+			if (p->space(false) == PAGE_SIZE) {
+				p.reset();
+				_keeper.loosen(addr);
+				--_relation._bCount;
+			}
+		}
+
+		/*void unionOp();
 		void diffOp();
 		void intersectOp();
 		void selectOp();
@@ -244,7 +325,7 @@ namespace db {
 
 		void insertOp();
 		void updateOp();
-		void deleteOp();
+		void deleteOp();*/
 	};
 
 	// TODO: tuple put in many pages

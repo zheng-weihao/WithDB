@@ -1,30 +1,71 @@
 #pragma once
 
 #include "keeper.hpp"
-#include "tuple.hpp"
+#include "relation.hpp"
+#include "relation_guard.hpp"
 
 #include <iostream>
 #include <string>
 #include <sstream>
 
-// simple controller to wrap, almost crap
 namespace db {
+	struct MetadataGuard {
+		constexpr static size_t BLOCK_CAPACITY = SEGMENT_SIZE / 4;
+		constexpr static size_t RELATION_META_INDEX = 1;
+		constexpr static size_t ATTRIBUTE_META_INDEX = 2;
+		constexpr static size_t INDEX_META_INDEX = 3;
 
-	struct controller {
-		std::shared_ptr<AttributeTable> table;
-		keeper k;
+		Keeper &_keeper;
+		std::unordered_map<std::string, Relation> _relations;
+		RelationGuard _relationMeta;
+		RelationGuard _attributeMeta;
+		RelationGuard _indexMeta;
 
-		controller(const char *path, bool trunc = false): k(path, trunc) {
-			table = std::make_shared<db::AttributeTable>(db::AttributeTable{
-				db::AttributeEntry(db::INT_T),
-				db::AttributeEntry(db::CHAR_T, 18),
-				db::AttributeEntry(db::VARCHAR_T),
-				db::AttributeEntry(db::INT_T),
-				db::AttributeEntry(db::CHAR_T, 15),
-				db::AttributeEntry(db::DOUBLE_T),
-				db::AttributeEntry(db::VARCHAR_T),
-				}
-			);
+	public:
+		inline MetadataGuard(Keeper &keeper) : _keeper(keeper), _relations{
+			{"RelationMeta", Relation("RelationMeta") },
+			{"AttributeMeta", Relation("AttributeMeta") },
+			{"IndexMeta", Relation("IndexMeta") },
+		}, _relationMeta(_keeper, _relations["RelationMeta"])
+		, _attributeMeta(_keeper, _relations["AttributeMeta"])
+		, _indexMeta(_keeper, _relations["IndexMeta"]) {
+			// TODO: config
+			{
+				auto &relation = _relationMeta._relation;
+				relation.add("Name", db::VARCHAR_T, 255)
+					.add("Capacity", db::LONG_T)
+					.add("Begin", db::LONG_T)
+					.add("End", db::LONG_T)
+					.add("Ptr", db::LONG_T)
+					.add("FixedTupleSize", db::LONG_T)
+					.add("MaxTupleSize", db::LONG_T)
+					.add("TCount", db::LONG_T)
+					.add("BCount", db::LONG_T)
+					.format();
+				relation._capacity = BLOCK_CAPACITY;
+				relation._ptr = relation._begin = RELATION_META_INDEX * BLOCK_CAPACITY;
+				auto p = _keeper.hold<VirtualPage>(0);
+				relation._end = p->read<address>(0);
+				relation._tCount = p->read<size_t>(sizeof(address));
+				relation._bCount = p->read<size_t>(sizeof(address) + sizeof(size_t));
+			}
+			
+			_relationMeta._relation._capacity = BLOCK_SIZE;
+			_attributeMeta._relation
+				.add("Name", db::VARCHAR_T, 255)
+				.add("Type", db::INT_T)
+				.add("Size", db::INT_T)
+				.add("Index", db::INT_T)
+				.add("Offset", db::INT_T)
+				.add("VCount", db::INT_T)
+				.format();
+		}
+	};
+
+	struct Controller {
+		Keeper _keeper;
+
+		Controller(const char *path, bool truncate = false): _keeper(path, truncate) {
 			k.start();
 			std::cerr << std::hex;
 		}
@@ -34,7 +75,7 @@ namespace db {
 			k.close();
 		}
 
-		~controller() {
+		~Controller() {
 			close(); // TODO: set flag isOpen
 		}
 
@@ -67,7 +108,7 @@ namespace db {
 					break;
 				case db::BLOB_T:
 				default:
-					throw std::runtime_error("[controller::put] unknown type");
+					throw std::runtime_error("[Controller::put] unknown type");
 				}
 				++i;
 			}
@@ -147,7 +188,7 @@ namespace db {
 					break;
 				case db::BLOB_T:
 				default:
-					throw std::runtime_error("[controller::get] unknown type");
+					throw std::runtime_error("[Controller::get] unknown type");
 				}
 				ss << '\t';
 			}

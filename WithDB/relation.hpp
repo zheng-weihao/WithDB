@@ -14,9 +14,9 @@ namespace db {
 
 	struct AttributeEntry {
 		std::string _name; // to save space in relation attribute table
-		size_t _index;
 		attribute_enum _type;
 		page_address _size;
+		size_t _index;
 		page_address _offset;
 		size_t _vCount;
 
@@ -109,26 +109,19 @@ namespace db {
 		size_t _tCount = 0;
 		size_t _bCount = 0;
 
-		inline Relation() {
+		inline Relation(const std::string &name = "") : _name(name) {
 		}
 
 		inline std::string &name() {
 			return _name;
 		}
 
-		inline Relation &add(const AttributeEntry &entry) {
+		template<typename... Args>
+		inline Relation &add(Args... args) {
 			if (isFormatted()) {
 				throw std::runtime_error("[Relation::add]");
 			}
-			_attributes.emplace_back(entry);
-			return *this;
-		}
-
-		inline Relation &add(AttributeEntry &&entry) {
-			if (isFormatted()) {
-				throw std::runtime_error("[Relation::add]");
-			}
-			_attributes.emplace_back(std::move(entry));
+			_attributes.emplace_back(args);
 			return *this;
 		}
 
@@ -217,7 +210,7 @@ namespace db {
 			std::unique_ptr<Tuple> _current;
 			std::vector<bool> _flags;
 		public:
-			TupleBuilder(Relation &relation) : _relation(relation), _flags(_relation._attributes.size(), false) {
+			inline TupleBuilder(Relation &relation) : _relation(relation), _flags(_relation._attributes.size(), false) {
 			}
 
 			inline bool isStarted() {
@@ -314,7 +307,7 @@ namespace db {
 			}
 		};
 
-		TupleBuilder builder() {
+		inline TupleBuilder builder() {
 			if (!isFormatted()) {
 				throw std::runtime_error("[TupleBuilder::constructor]");
 			}
