@@ -3,6 +3,7 @@
 #include "keeper.hpp"
 #include "relation.hpp"
 #include "relation_guard.hpp"
+#include "index_guard.hpp"
 
 #include <iostream>
 #include <string>
@@ -17,6 +18,7 @@ namespace db {
 
 		Keeper &_keeper;
 		std::unordered_map<std::string, Relation> _relations;
+		std::unordered_map<std::pair<std::string, size_t>, address> _indexes;
 		RelationGuard _relationMeta;
 		RelationGuard _attributeMeta;
 		RelationGuard _indexMeta;
@@ -29,11 +31,6 @@ namespace db {
 		}, _relationMeta(_keeper, _relations["RelationMeta"])
 		, _attributeMeta(_keeper, _relations["AttributeMeta"])
 		, _indexMeta(_keeper, _relations["IndexMeta"]) {
-			load();
-		}
-
-		inline ~MetadataGuard() {
-			dump();
 		}
 
 		inline void load() {
@@ -58,10 +55,17 @@ namespace db {
 				.add("Offset", db::INT_T)
 				.add("VCount", db::LONG_T)
 				.format();
+			auto &i = _indexMeta._relation;
+			i.add("RelationName", db::VARCHAR_T, 255)
+				.add("Index", db::LONG_T)
+				.add("Ptr", db::LONG_T)
+				.format();
 			r._capacity = BLOCK_CAPACITY;
 			r._ptr = r._begin = RELATION_META_INDEX * BLOCK_CAPACITY;
 			a._capacity = BLOCK_CAPACITY;
 			a._ptr = a._begin = ATTRIBUTE_META_INDEX * BLOCK_CAPACITY;
+			i._capacity = BLOCK_CAPACITY;
+			i._ptr = i._begin = INDEX_META_INDEX * BLOCK_CAPACITY;
 			auto p = _keeper.hold<VirtualPage>(0);
 			r._end = p->read<address>(0);
 			r._tCount = p->read<size_t>(sizeof(address));
@@ -69,12 +73,16 @@ namespace db {
 			a._end = p->read<address>(sizeof(address) + 2 * sizeof(size_t));
 			a._tCount = p->read<size_t>(2 * sizeof(address) + 2 * sizeof(size_t));
 			a._bCount = p->read<size_t>(2 * sizeof(address) + 3 * sizeof(size_t));
+			i._end = p->read<address>(2 * sizeof(address) + 4 * sizeof(size_t));
+			i._tCount = p->read<size_t>(3 * sizeof(address) + 4 * sizeof(size_t));
+			i._bCount = p->read<size_t>(3 * sizeof(address) + 5 * sizeof(size_t));
 			p->unpin();
 			p.reset();
 			if (!a._end) {
 				_keeper._translator._params[0].first = 1;
 				r._end = r._begin;
 				a._end = a._begin;
+				i._end = i._end;
 			}
 			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
 				Relation relation = toRelation(tuple);
@@ -83,6 +91,11 @@ namespace db {
 			_attributeMeta.traverseTuple([this](Tuple &tuple, address addr) {
 				AttributeEntry entry = toAttribute(tuple);
 				addAttribute(entry, _attributeMeta._relation.read<std::string>(tuple, 0));
+			});
+			_indexMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				std::pair<std::string, size_t> p;
+				auto ptr = toIndex(tuple, p.first, p.second);
+				addIndex(p.first, p.second, ptr);
 			});
 			for (auto &p : _relations) {
 				p.second.format();
@@ -104,6 +117,13 @@ namespace db {
 				tuple = toTuple(current, name, tuple._container);
 				_relationMeta.reallocate(addr, tuple);
 			});
+			_indexMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				std::pair<std::string, size_t> p;
+				auto ptr = toIndex(tuple, p.first, p.second);
+				ptr = _indexes[p];
+				tuple = toTuple(p.first, p.second, ptr, tuple._container);
+				_relationMeta.reallocate(addr, tuple);
+			});
 			auto p = _keeper.hold<VirtualPage>(0);
 			auto &r = _relationMeta._relation;
 			p->write(r._end, 0);
@@ -113,6 +133,10 @@ namespace db {
 			p->write(a._end, sizeof(address) + 2 * sizeof(size_t));
 			p->write(a._tCount, 2 * sizeof(address) + 2 * sizeof(size_t));
 			p->write(a._bCount, 2 * sizeof(address) + 3 * sizeof(size_t));
+			auto &i = _indexMeta._relation;
+			p->write(i._end, 2 * sizeof(address) + 4 * sizeof(size_t));
+			p->write(i._tCount, 3 * sizeof(address) + 4 * sizeof(size_t));
+			p->write(i._bCount, 3 * sizeof(address) + 5 * sizeof(size_t));
 			p->dump();
 		}
 
@@ -183,35 +207,98 @@ namespace db {
 			return _attributeMeta._relation.builder().start(container)
 				.build(relationName, 0)
 				.build(entry._name, 1)
-				.build(entry._type, 2)
-				.build(entry._size, 3)
-				.build(entry._index, 4)
-				.build(entry._offset, 5)
-				.build(entry._vCount, 6)
+				.build(static_cast<int>(entry._type), 2)
+				.build(static_cast<int>(entry._size), 3)
+				.build(static_cast<long long>(entry._index), 4)
+				.build(static_cast<int>(entry._offset), 5)
+				.build(static_cast<long long>(entry._vCount), 6)
 				.result();
 		}
 
 		inline bool addAttribute(const AttributeEntry &entry, const std::string &relationName) {
 			_relations[relationName]._attributes.push_back(entry);
 		}
+	
+		inline address toIndex(Tuple &tuple, std::string &relationName, size_t index) {
+			Relation &relation = _indexMeta._relation;
+			relationName = relation.read<std::string>(tuple, 0);
+			index = static_cast<size_t>(relation.read<long long>(tuple, 1));
+			return static_cast<address>(relation.read<long long>(tuple, 2));
+		}
+
+		inline Tuple toTuple(const std::string &relationName, size_t index, address ptr, TupleContainer &container) {
+			container.resize(_indexMeta._relation.maxTupleSize());
+			return _attributeMeta._relation.builder().start(container)
+				.build(relationName, 0)
+				.build(static_cast<long long>(index), 1)
+				.build(static_cast<long long>(ptr), 2)
+				.result();
+		}
+
+		inline bool addIndex(const std::string &relationName, size_t index, address ptr) {
+			TupleContainer tmp(0);
+			Tuple t = toTuple(relationName, index, ptr, tmp);
+			_indexMeta.allocate(t);
+		}
 	};
 
 	struct Controller {
 		Keeper _keeper;
+		MetadataGuard _metadata;
+		std::unordered_map<std::string, RelationGuard> _relations;
+		std::unordered_map<std::pair<std::string, size_t>, IndexGuard<int>> _intIndexes;
+		std::unordered_map<std::pair<std::string, size_t>, IndexGuard<std::string>> _stringIndexes;
 
 		Controller(const char *path, bool truncate = false): _keeper(path, truncate) {
-			k.start();
-			std::cerr << std::hex;
-		}
-
-		void close() {
-			k.stop();
-			k.close();
+			_keeper.start();
+			_metadata.load();
+			for (auto & p: _metadata._relations) {
+				if (p.first != "RelationMeta" && p.first != "AttributeMeta" && p.first != "IndexMeta") {
+					_relations.insert(make_pair(p.first, RelationGuard(_keeper, p.second)));
+				}
+			}
+			for (auto &p : _metadata._indexes) {
+				auto ptr = p.second;
+				auto type = _relations[p.first.first]._relation._attributes[p.first.second]._type;
+				if (type == INT_T) {
+					_intIndexes[p.first] = IndexGuard<int>(&_keeper, p.second);
+				} else {
+					_stringIndexes[p.first] = IndexGuard <std::string> (&_keeper, p.second);
+				}
+			}
 		}
 
 		~Controller() {
-			close(); // TODO: set flag isOpen
+			_intIndexes.clear();
+			_stringIndexes.clear();
+			_relations.clear();
+			_metadata.dump();
+			_keeper.close();
 		}
+
+		void createRelation
+
+		void createIndex(std::string relationName, type t) {
+			switch (type) {
+			case int:
+				IndexGuard<int> igg(_keeper);
+				_intIndexes[std::make_pair(rel, attr)] = igg;
+				case string;
+					IndexGuard<string> igg(_keeper);
+					_stringIndexes[std::make_pair(rel, attr)] = igg;
+			}
+			address addr = igg.iroot;
+			addIndex(rel, attr, t, addr);
+
+		}
+
+		address fetchIndex(string r, size_t , string key) {
+			return tr->search(T);
+		}
+		address fetch(string r, string a, int key) {
+			return tr->search(T);
+		}
+
 
 		address put(const std::string &row, address start = 0) {
 			std::stringstream ss(row);
