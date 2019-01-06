@@ -1,292 +1,418 @@
-#ifndef __CACHE_HPP__
-#define __CACHE_HPP__
+#pragma once
 
-#include "page.hpp"
 #include "definitions.hpp"
+#include "utils.hpp"
 
 #include <algorithm>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
+#include <functional>
 #include <vector>
 
-// replace: find item to kick, kick item, load new comer(if error recover to the time after kicking)
-// never know what will cause exception when handle insert
-// TODO: find lock-free structure or elegant way to lock
-// TOOD: only pin-unpin need lock, event_loop keep replace operation, is that true?
-// access is meanless, thread should pin their page when before access page
-// TODO: reader-writer problem in pin page
+// TODO: I think a better structure is a hash table with vector for metrics storing
+// TODO: mru might need a better design, like while search, the threshold enlarged for a fast but not so accurate replacement, but lower io exchange is our main target for sure
+// TODO: shrink and expand Cache handling
+
+// DESIGN:
+// Cache is not thread-safe
+// all those thread safety should be managed in higher level, like all guard, at least virtual page level
+
 namespace db {
+	// DESIGN:
+	// CacheCore is a set of algorithm with a dynamic capacity for Cache exchange
+	// replace without flag reference will throw an exception when find no item to kick, caller should keep notice this
+	// replace operator(): find item to kick if full, and kick item (even we know that Cache load might fail)
+	// Cache should put new address manually (if error recover to the time after kicking)
+	// because we never know what will cause exception when handle Cache insert
+	// calling operator() won't put the new value in its store, but will kick one if full (if cache_handler process with an error, we will have a wrong one keeping in the store, and cause exception when kick it)
+	// after new address successfully load, Cache should put the new address in the replacement list with pinned status
+	// CacheCore pin status is only used for Cache exchange choosing and should not be used as a flag for multi-thread to check availability
+	// capacity == 0 represent closed status
+	//  = [](Address addr) {return static_cast<size_t>(addr) / PAGE_SIZE; }
+	// TODO: maybe core should keep index information for stored address
 	template<typename Address>
-	struct cache_replace {
-		struct cache_log {
-			int pin_cnt;
-			timestamp accessAt;
-			cache_log(timestamp accessAt) : pin_cnt(0), accessAt(accessAt) {
-			}
-		};
-		std::unordered_map<Address, cache_log> logs;
-		std::size_t limit;
-		std::mutex access_mutex;
+	using AddressHash = size_t(*)(Address);
+	template<typename Address, AddressHash<Address> Hash> // TODO: best practice to pass constexpr lambda
+	struct HashCacheCore {
+		std::vector<bool> _flags;
+		std::vector<Address> _addresses;
 	public:
-		cache_replace(std::size_t limit): limit(limit) {
+		inline HashCacheCore(size_t capacity = 0) : _flags(capacity), _addresses(capacity) {
 		}
 
-		cache_replace(const cache_replace &other): logs(logs), limit(limit) {
+		inline HashCacheCore(const HashCacheCore &other) : _flags(other._flags), _addresses(other._addresses) {
 		}
 
-		cache_replace(cache_replace &&other) :
-			logs(std::move(logs)), limit(limit) {
-			
+		inline HashCacheCore(HashCacheCore &&other) :_flags(std::move(other._flags)), _addresses(std::move(other._addresses)) {
 		}
 
-		// replace with MRU
-		Address operator()(Address addr) {
-			std::unique_lock<std::mutex> lock(access_mutex);
-			auto ret = addr;
-			if (logs.size() >= limit) {
-				using comp_type = decltype(*(logs.begin()));
-				auto comp = [](const comp_type &a, const comp_type &b) -> bool {
-					if ((a.second.pin_cnt > 0) ^ (b.second.pin_cnt > 0)) {
-						return b.second.pin_cnt > 0;
-					} else {
-						return a.second.accessAt > b.second.accessAt;
-					}
-				};
-				auto iter = std::min_element(logs.begin(), logs.end(), comp);
-				if (iter->second.pin_cnt > 0) {
-					throw std::runtime_error("[cache_replace] all addresses are pinned");
-				} else {
-					ret = iter->first;
-					logs.erase(iter);
-				}
+		inline ~HashCacheCore() {
+			close();
+		}
+
+		inline bool isOpen() {
+			return _flags.size() != 0;
+		}
+
+		inline void open(std::size_t capacity) {
+			if (isOpen()) {
+				throw std::runtime_error("[MRUCacheCore::open]");
 			}
+			_flags.resize(capacity);
+			_addresses.resize(capacity);
+		}
+
+		inline void close() {
+			if (!isOpen()) {
+				return;
+			}
+			_flags.clear();
+			_addresses.clear();
+		}
+
+		inline size_t capacity() {
+			return _flags.size();
+		}
+
+		inline size_t hash(Address addr) {
+			return Hash(addr) % capacity();
+		}
+
+		// TODO: might have other changable arguements for Metrics
+		inline bool hit(Address addr) { // TODO: maybe change to hit and return index for address
+			return true; // just pass, handle event when hit
+		}
+
+		inline bool insert(Address addr) {
+			auto code = hash(addr);
+			if (_flags[code]) {
+				return false;
+			}
+			_flags[code] = true;
+			_addresses[code] = addr;
+			return true;
+		}
+
+		inline bool erase(Address addr) {
+			auto code = hash(addr);
+			if (_flags[code] && _addresses[code] == addr) {
+				_flags[code] = false;
+				return true;
+			}
+			return false;
+		}
+
+		// addr is for further use in choicing kick item algorithm
+		inline Address replace(Address addr, bool &flag) {
+			flag = true;
+			auto code = hash(addr);
+			auto ret = _flags[code] ? _addresses[code] : addr;
+			_flags[code] = false;
 			return ret;
 		}
 
-		void success(Address addr) {
-			std::unique_lock<std::mutex> lock(access_mutex);
-			logs.insert(std::make_pair(addr, cache_log(current_timestamp())));
-		}
-
-		void access(Address addr) {
-			std::unique_lock<std::mutex> lock(access_mutex);
-			auto iter = logs.find(addr);
-			if (iter == logs.end()) {
-				throw std::runtime_error("[cache_replace::access] cannot find address in logs");
-			} else {
-				iter->second.accessAt = current_timestamp();
-			}
-		}
-
-		bool is_pinned(Address addr) {
-			std::unique_lock<std::mutex> lock(access_mutex);
-			auto iter = logs.find(addr);
-			return iter != logs.end() && iter->second.pin_cnt > 0;
-		}
-
-		bool pin(Address addr) {
-			std::unique_lock<std::mutex> lock(access_mutex);
-			auto iter = logs.find(addr);
-			if (iter == logs.end()) {
-				throw std::runtime_error("[cache_replace::pin] cannot find address in logs");
-			} else {
-				if (iter->second.pin_cnt) {
-					return false;
-				} else {
-					iter->second.pin_cnt += 1;
-					return true;
-				}
-				
-			}
-		}
-
-		void unpin(Address addr) {
-			std::unique_lock<std::mutex> lock(access_mutex);
-			auto iter = logs.find(addr);
-			if (iter == logs.end()) {
-				// throw std::runtime_error("[cache_replace::unpin] cannot find address in logs");
-			} else {
-				if (!iter->second.pin_cnt) {
-					return;
-				}
-				iter->second.pin_cnt -= 1;
-				if (iter->second.pin_cnt <= 0) {
-					iter->second.accessAt = current_timestamp();
-				}
-			}
-		}
-	};
-
-	// interface handler for cache insert-erase operation
-	// handler can change its own status for the operation
-	template<typename Address, typename Type>
-	struct cache_handler {
-		// handle cache insert and put insert mapping value in &value
-		virtual bool cache_insert(Address addr, Type &value) = 0;
-		// handle cache erase and put mapping value in &value for cleaning/write_back ...
-		virtual bool cache_erase(Address addr, Type &value) = 0;
-	};
-
-
-	// TODO: maybe consider flexible cache memory in the future
-	// fix size cache
-	template<typename Address, typename Type>
-	struct cache {
-		std::unordered_map<Address, Type> value_map;
-		cache_replace<Address> replace;
-		cache_handler<Address, Type> &handler;
-	public:
-		cache(std::size_t size, cache_handler<Address, Type> &handler) : replace(size), handler(handler) {
-		}
-
-		cache(const cache &other) : cache(other.ptrs.size(), other.handler) {
-		}
-
-		cache(cache &&other) :
-			value_map(std::move(other.value_map)),
-			replace(std::move(other.replace)), handler(other.handler) {
-
-		}
-
-		bool insert(Address addr, Type &value) {
-			auto flag = handler.cache_insert(addr, value);
-			if (flag) {
-				value_map.insert(std::make_pair(addr, value));
-				replace.success(addr); // add to replace when success
-			}
-			return flag;
-		}
-
-		bool erase(Address addr) {
-			auto value = value_map[addr];
-			auto flag = value_map.erase(addr);
-			handler.cache_erase(addr, value);
-			return flag;
-		}
-
-		Type get(Address addr) {
-			auto iter = value_map.find(addr);
-			if (iter != value_map.end()) {
-				replace.access(addr);
-			} else {
-				auto result = replace(addr);
-				if (result != addr) {
-					erase(result);
-				}
-				Type tmp;
-				bool flag = insert(addr, tmp);
-				if (!flag) {
-					throw std::runtime_error("[cache::get] cannot find address mapping value");
-				}
-				iter = value_map.find(addr);
-			}
-			return iter->second;
-		}
-
-		bool is_pinned(Address addr) {
-			return replace.is_pinned(addr);
-		}
-
-		bool pin(Address addr) {
-			replace.pin(addr);
-		}
-
-		void unpin(Address addr) {
-			replace.unpin(addr);
+		// throw a exception without setting the flag
+		inline Address replace(Address addr) {
+			bool flag;
+			return replace(addr, flag);
 		}
 	};
 
 	template<typename Address>
-	struct cache<Address, page> {
-		using control_pair = std::pair<typename std::vector<char>::iterator, typename std::vector<char>::iterator>;
-		using control_ptr = std::shared_ptr<control_pair>;
-		std::vector<char> memory;
-		std::vector<control_ptr> ptrs;
-		std::unordered_map<Address, std::size_t> position_map;
-		cache_replace<Address> replace;
-		cache_handler<Address, page> &handler;
+	struct MRUCacheCore {
+		struct Metrics {
+			bool _pin; // change to control bitset if there are other flags to save
+			timestamp _accessAt;
+			inline Metrics(bool pin, timestamp accessAt) : _pin(pin), _accessAt(accessAt) {
+			}
+			inline Metrics(bool pin = false) : Metrics(pin, current()) {
+			}
+		};
+		
+		// capacity can be flexible, so it's not a template parameter
+		size_t _capacity; // TODO: change to capacity
+		std::unordered_map<Address, Metrics> _items;
+
 	public:
-		cache(std::size_t size, cache_handler<Address, page> &handler) : memory(size * PAGE_SIZE),
-			ptrs(size), replace(size), handler(handler) {
+		inline MRUCacheCore(size_t capacity = 0) : _capacity(capacity) {
 		}
 
-		cache(const cache &other): cache(other.ptrs.size(), other.handler){
+		inline MRUCacheCore(const MRUCacheCore &other) : _capacity(other._capacity), _items(other._items) {
 		}
 
-		cache(cache &&other) :
-			memory(std::move(other.memory)),
-			ptrs(std::move(other.ptrs)),
-			position_map(std::move(other.position_map)),
-			replace(std::move(other.replace)), handler(other.handler) {
-
+		inline MRUCacheCore(MRUCacheCore &&other) : _capacity(other._capacity), _items(std::move(other._items)) {
+			other._capacity = 0;
 		}
 
-		bool insert(Address addr, page &value) {
-			bool flag = handler.cache_insert(addr, value);
-			// TODO: hacking way to get page index in cache
-			if (flag) {
-				position_map.insert(std::make_pair(addr, (value.begin() - memory.begin()) / PAGE_SIZE));
-				replace.success(addr);
+		inline ~MRUCacheCore() {
+			close();
+		}
+
+		inline bool isOpen() {
+			return _capacity != 0;
+		}
+
+		inline void open(std::size_t capacity) {
+			if (isOpen()) {
+				throw std::runtime_error("[MRUCacheCore::open]");
 			}
-			return flag;
+			_capacity = capacity;
 		}
 
-		bool erase(Address addr) {
-			auto index = position_map[addr];
-			position_map.erase(addr);
-			page tmp(std::move(ptrs[index]));
-			auto flag = handler.cache_erase(addr, tmp);
-			tmp.deactivate();
-			return flag;
+		inline void close() {
+			if (!isOpen()) {
+				return;
+			}
+			for (auto &p : _items) {
+				if (p.second._pin) {
+					throw std::runtime_error("[MRUCacheCore::close]"); // close with pinned address should not be allowd
+				}
+			}
+			_items.clear();
+			_capacity = 0;
 		}
 
-		page get(Address addr) {
-			auto iter = position_map.find(addr);
-			std::size_t index = 0;
-			if (iter != position_map.end()) {
-				index = iter->second;
-				replace.access(addr);
-			} else {
-				auto result = replace(addr);
-				if (result != addr) {
-					index = position_map[result];
-					erase(result);
+		inline size_t size() {
+			return _items.size();
+		}
+
+		inline size_t capacity() {
+			return _capacity;
+		}
+
+		inline bool isFull() {
+			return size() == _capacity;
+		}
+
+		// TODO: might have other changable arguements for Metrics
+		inline bool hit(Address addr) {
+			auto iter = _items.find(addr);
+			if (iter == _items.end()) {
+				return false;
+			}
+			iter->second._accessAt = current();
+			return true;
+		}
+
+		inline bool insert(Address addr, bool pin = false) {
+			if (isFull()) {
+				return false;
+			}
+			_items.insert(std::make_pair(addr, Metrics(pin)));
+			return true;
+		}
+
+		inline bool erase(Address addr) {
+			auto iter = _items.find(addr);
+			if (iter == _items.end() || iter->second._pin) {
+				return false;
+			}
+			_items.erase(iter);
+			return true;
+		}
+
+		// replace with MRU
+		// addr is for further use in choicing kick item algorithm
+		inline Address replace(Address addr, bool &flag) {
+			flag = true;
+			if (!isFull()) {
+				return addr;
+			}
+			using compare_t = typename decltype(_items)::value_type;
+			auto iter = std::min_element(_items.begin(), _items.end(),
+				[](const compare_t &a, const compare_t &b) {
+				if (a.second._pin ^ b.second._pin) {
+					return b.second._pin;
 				} else {
-					for (index = 0; index < ptrs.size(); ++index) {
-						if (!ptrs[index]) {
-							break;
-						}
-					}
-				}
-				ptrs[index].reset();
-				auto alloc_begin = memory.begin() + index * PAGE_SIZE;
-				auto alloc_end = alloc_begin + PAGE_SIZE;
-				auto tmp = std::make_shared<control_pair>(std::make_pair(alloc_begin, alloc_end));
-				page tmp_page(tmp);
-				bool flag = insert(addr, tmp_page);
-				if (!flag) {
-					throw std::runtime_error("[cache::get] cannot find address mapping value");
-				}
-				ptrs[index] = std::move(tmp);
+					return a.second._accessAt > b.second._accessAt;
+				}}
+			);
+			if (iter->second._pin) {
+				flag = false;
+				return addr;
+			} else {
+				auto ret = iter->first;
+				_items.erase(iter);
+				return ret;
 			}
-			return page(ptrs[index]);
+		}
+		
+		// throw a exception without setting the flag
+		inline Address replace(Address addr) {
+			bool flag = false;
+			addr = replace(addr, flag);
+			if (!flag) {
+				throw std::runtime_error("[MRUCacheCore::operator()]");
+			}
+			return addr;
 		}
 
-		bool is_pinned(Address addr) {
-			return replace.is_pinned(addr);
+		inline bool isPinned(Address addr) {
+			auto iter = _items.find(addr);
+			if (iter == _items.end()) {
+				throw std::runtime_error("[MRUCacheCore::pin]");
+			}
+			return iter->second._pin;
 		}
 
-		bool pin(Address addr) {
-			return replace.pin(addr);
+		inline bool pin(Address addr) {
+			auto iter = _items.find(addr);
+			if (iter == _items.end()) {
+				return false;
+				// throw std::runtime_error("[MRUCacheCore::pin]");
+			}
+			iter->second._pin = true;
+			// timestamp don't need to change because pinned items can't be kicked
+			return true;
 		}
 
-		void unpin(Address addr) {
-			replace.unpin(addr);
+		inline bool unpin(Address addr) {
+			auto iter = _items.find(addr);
+			if (iter == _items.end()) {
+				return false;
+				// throw std::runtime_error("[MRUCacheCore::unpin]");
+			}
+			iter->second._pin = false;
+			iter->second._accessAt = current();  // record unpin timestamp
+			return true;
+		}
+	};
+
+	// universal interface to handle Cache insert-erase-hit event
+	// handler can change its own status for these operation
+	template<typename Address, typename Value>
+	struct BasicCacheHandler {
+		// handle Cache insert and put insert mapping value in &value
+		inline bool onInsert(Address addr, Value &value) {
+			return true;
+		}
+		// default Cache will not trigger hit event, it's used for handling partial load problem
+		inline bool onHit(Address addr, Value &value) {
+			return true;
+		}
+		// handle Cache erase and put mapping value in &value for cleaning/write_back ...
+		inline bool onErase(Address addr, Value &value) {
+			return true;
+		}
+	};
+
+	// DESIGN:
+	// Cache is a key-value structure in my opinion, so the core feature is to access value freely without caring about the insert-erase staff
+	// Cache handler is designed for higher levels to control the insert-erase behavior, because only these parts know how to do it
+	// Cache is at the lower level, because it can be reused a lot in many parts
+	// Cache address type and value type shoud be simple enough for value copy, and has default constructor
+	// replace closed represent closed status
+	// commonly used in tlb
+	// TODO: maybe consider flexible Cache memory in the future, shrink-expand
+	template<typename Address, typename Value, typename Handler, typename Core = MRUCacheCore<Address>>
+	struct Cache: Core {
+		using super = Core;
+		using address_type = Address;
+		using value_type = Value;
+		using handler_type = Handler;
+		using core_type = Core;
+		
+		Handler &_handler;
+		std::unordered_map<Address, Value> _values;
+		
+	public:
+		inline Cache(Handler &handler, size_t capacity = 0) : super(capacity), _handler(handler) {
+		}
+
+		inline Cache(const Cache &other) : super(other), _handler(other._handler), _values(other._values) {
+		}
+
+		inline Cache(Cache &&other) : super(std::move(other)), _handler(other._handler), _values(std::move(other._values)) {
+			super::close();
+		}
+
+		inline ~Cache() {
+			close();
+		}
+
+		inline void open(size_t capacity) {
+			if (super::isOpen()) {
+				throw std::runtime_error("[Cache::open]");
+			}
+			super::open(capacity);
+		}
+
+		inline void close() {
+			if (!super::isOpen()) {
+				return;
+			}
+			super::close();
+			for (auto &v : _values) {
+				bool result = _handler.onErase(v.first, v.second);
+				if (!result) {
+					throw std::runtime_error("[Cache::close]");
+				}
+			}
+			_values.clear();
+		}
+
+		inline bool hit(Address addr, Value &value) {
+			return super::hit(addr) && _handler.onHit(addr, value); // TODO: more feature
+		}
+
+		inline bool insert(Address addr, Value &value) {
+			auto flag = _handler.onInsert(addr, value);
+			if (flag) {
+				flag = _values.insert(std::make_pair(addr, value)).second;
+			}
+			return flag;
+		}
+
+		// with no exception, private function, not in core
+		inline bool erase(Address addr) {
+			auto iter = _values.find(addr);
+			if (iter == _values.end()) {
+				return false;
+			}
+			bool flag = _handler.onErase(addr, iter->second);
+			_values.erase(iter);
+			return flag;
+		}
+
+		inline Value fetch(Address addr, bool &flag) { // TODO: default argument list on fetch function design to init default value
+			flag = true;
+			auto iter = _values.find(addr);
+			if (iter != _values.end()) {
+				flag = hit(addr, iter->second);
+				if (flag) {
+					return iter->second;
+				} else {
+					return defaultValue<Value>(); // TODO: use arguement list to remove
+				}
+			}
+			auto res = super::replace(addr);
+			if (res != addr) {
+				flag = erase(res);
+				if (!flag) {
+					return defaultValue<Value>(); // TODO: use arguement list to remove
+				}
+			}
+			Value tmp;
+			flag = insert(addr, tmp);
+			if (flag) {
+				flag = super::insert(addr); // add to replace when success
+			}
+			return tmp;
+		}
+
+		inline Value fetch(Address addr) { // TODO: same problem
+			bool flag;
+			Value tmp = fetch(addr, flag);
+			if (!flag) {
+				throw std::runtime_error("[Cache::fetch]");
+			}
+			return tmp;
+		}
+
+		inline bool discard(Address addr) { // force kick out
+			return super::erase(addr) && erase(addr);
 		}
 	};
 }
-
-#endif // __CACHE_HPP__

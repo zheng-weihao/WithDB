@@ -11,18 +11,18 @@
 namespace db {
 
 	struct controller {
-		std::shared_ptr<tuple_table> table;
+		std::shared_ptr<AttributeTable> table;
 		keeper k;
 
 		controller(const char *path, bool trunc = false): k(path, trunc) {
-			table = std::make_shared<db::tuple_table>(db::tuple_table{
-				db::tuple_entry(db::INT_T),
-				db::tuple_entry(db::CHAR_T, 18),
-				db::tuple_entry(db::VARCHAR_T),
-				db::tuple_entry(db::INT_T),
-				db::tuple_entry(db::CHAR_T, 15),
-				db::tuple_entry(db::DOUBLE_T),
-				db::tuple_entry(db::VARCHAR_T),
+			table = std::make_shared<db::AttributeTable>(db::AttributeTable{
+				db::AttributeEntry(db::INT_T),
+				db::AttributeEntry(db::CHAR_T, 18),
+				db::AttributeEntry(db::VARCHAR_T),
+				db::AttributeEntry(db::INT_T),
+				db::AttributeEntry(db::CHAR_T, 15),
+				db::AttributeEntry(db::DOUBLE_T),
+				db::AttributeEntry(db::VARCHAR_T),
 				}
 			);
 			k.start();
@@ -35,18 +35,18 @@ namespace db {
 		}
 
 		~controller() {
-			close(); // TODO: set flag is_open
+			close(); // TODO: set flag isOpen
 		}
 
 		address put(const std::string &row, address start = 0) {
 			std::stringstream ss(row);
 			std::string item;
 			int i = 0;
-			db::tuple_builder builder;
+			db::TupleBuilder builder;
 			builder.set_table(table);
 			builder.start();
 			while (std::getline(ss, item, '|')) {
-				attribute_type_enum e = (*table)[i].get_type();
+				attribute_enum e = (*table)[i].get_type();
 				switch (e) {
 				case db::CHAR_T:
 				case db::VARCHAR_T:
@@ -77,10 +77,10 @@ namespace db {
 			address ret = 0;
 
 			for (db::address addr = start; addr < SEGMENT_SIZE; addr += db::PAGE_SIZE) {
-				db::tuple_page p(std::move(k.hold(addr)));
+				db::TuplePage p(std::move(k.hold(addr)));
 				try {
 					p.load();
-				} catch (std::out_of_range e) {
+				} catch (std::runtime_error e) {
 					p.init();
 				}
 				try {
@@ -89,7 +89,7 @@ namespace db {
 					p.copy_from(out->begin(), pa.first, pa.second);
 					ret = p.addr + result;
 					break;
-				} catch (std::out_of_range e) {
+				} catch (std::runtime_error e) {
 					// std::cerr << e.what() << endl;
 				}
 			}
@@ -112,11 +112,11 @@ namespace db {
 		}
 
 		std::string get(address addr) {
-			db::tuple_page p(std::move(k.hold((addr / PAGE_SIZE) * PAGE_SIZE)));
+			db::TuplePage p(std::move(k.hold((addr / PAGE_SIZE) * PAGE_SIZE)));
 			std::stringstream ss;
 			try {
 				p.load();
-			} catch (std::out_of_range e) {
+			} catch (std::runtime_error e) {
 				return ss.str();
 			}
 			auto pa = p.get(static_cast<page_address>(addr % PAGE_SIZE));
@@ -126,7 +126,7 @@ namespace db {
 			db::tuple tmp(pa.second - pa.first);
 			p.copy_to(tmp.begin(), pa.first, pa.second);
 			for (int i = 0; i < table->size(); ++i) {
-				attribute_type_enum e = (*table)[i].get_type();
+				attribute_enum e = (*table)[i].get_type();
 				switch (e) {
 				case db::CHAR_T:
 				case db::VARCHAR_T:
@@ -157,15 +157,15 @@ namespace db {
 		int get_all(int br = 0, address start = 0) {
 			int counter = 0;
 			for (auto addr = start; addr >= 0; addr += PAGE_SIZE) {
-				tuple_page p(std::move(k.hold(addr)));
+				TuplePage p(std::move(k.hold(addr)));
 				try {
 					p.load();
-				} catch (std::out_of_range e) {
+				} catch (std::runtime_error e) {
 					break;
 				}
 				
-				for (auto &entry : p.piece_table) {
-					std::cout << get(p.addr + entry.index) << std::endl;
+				for (auto &entry : p._entries) {
+					std::cout << get(p.addr + entry._index) << std::endl;
 					++counter;
 					if (br && counter % br == 0) {
 						std::getchar();

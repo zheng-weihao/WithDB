@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -154,15 +154,15 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="cache.hpp" />
-    <ClInclude Include="controller.hpp" />
+    <ClInclude Include="drive.hpp" />
     <ClInclude Include="endian.hpp" />
     <ClInclude Include="keeper.hpp" />
     <ClInclude Include="page.hpp" />
-    <ClInclude Include="drive.hpp" />
     <ClInclude Include="pch.h" />
-    <ClInclude Include="translator.hpp" />
-    <ClInclude Include="tuple.hpp" />
     <ClInclude Include="definitions.hpp" />
+    <ClInclude Include="relation.hpp" />
+    <ClInclude Include="translator.hpp" />
+    <ClInclude Include="relation_guard.hpp" />
     <ClInclude Include="utils.hpp" />
   </ItemGroup>
   <ItemGroup>
