@@ -66,7 +66,7 @@ namespace db {
 			reactivate(true);
 			_flags = read<page_address>(FLAGS_POS);
 			if (!_flags) {
-				return true;
+				return false;
 			}
 			_usedSize = read<page_address>(USED_SIZE_POS);
 			_front = read<page_address>(FRONT_POS);
@@ -79,7 +79,7 @@ namespace db {
 				auto index = read<page_address>(offset + TUPLE_ENTRY_INDEX_POS);
 				auto ptr = read<page_address>(offset + TUPLE_ENTRY_PTR_POS);
 				entry._index = resetFlags(index, TUPLE_ENTRY_DELETED_BIT);
-				entry._begin = last;
+				entry._begin = ptr;
 				entry._end = last;
 				entry._isComplete = getFlag(index, TUPLE_ENTRY_COMPLETE_BIT);
 				entry._isHead = getFlag(index, TUPLE_ENTRY_HEAD_BIT);
@@ -89,11 +89,12 @@ namespace db {
 			}
 			orderByIndex();
 			unpin();
+			return true;
 		}
 
 		virtual bool dump() {
 			if (!_flags) {
-				return true;
+				return false;
 			}
 			orderByPosition();
 			reactivate(true);
@@ -116,6 +117,7 @@ namespace db {
 			}
 			unpin();
 			orderByIndex();
+			return true;
 		}
 
 		inline void init() {
@@ -168,8 +170,9 @@ namespace db {
 			_usedSize += size + TUPLE_ENTRY_SIZE;
 			_front += TUPLE_ENTRY_SIZE;
 			_back -= size;
+			auto ret = iter - _entries.begin();
 			_entries.emplace(iter, tmp, _back, _back + size);
-			return iter - _entries.begin();
+			return ret;
 		}
 
 		inline size_t free(page_address index) {
@@ -249,6 +252,34 @@ namespace db {
 		inline RelationGuard(Keeper &keeper, Relation &relation) : _keeper(keeper), _relation(relation) {
 		}
 
+		template<typename Function>
+		inline void traversePage(Function fn) {
+			for (auto ptr = _relation._begin; ptr != _relation._end; ptr += PAGE_SIZE) {
+				auto p = _keeper.hold<TuplePage>(ptr, true, false);
+				if (!p->load()) {
+					continue;
+				}
+				fn(*p, ptr);
+			}
+		}
+
+		template<typename Function>
+		inline void traverseTuple(Function fn) {
+			traversePage([fn](TuplePage &page, address addr) {
+				size_t i = 0;
+				for (auto &entry : page._entries) {
+					if (entry._isDeleted) {
+						continue;
+					}
+					TupleContainer tmp(entry.size());
+					Tuple tuple(tmp, 0, tmp.size());
+					page.copy_to(tuple.begin(), i);
+					fn(tuple, addr + entry._index);
+					++i;
+				}
+			});
+		}
+
 		inline Tuple fetch(address addr, TupleContainer &container) {
 			auto p = _keeper.hold<TuplePage>(pageAddress(addr));
 			auto result = p->fetch(pageIndex(addr));
@@ -282,6 +313,7 @@ namespace db {
 					_relation._ptr = ptr;
 					++_relation._tCount;
 					p->copy_from(tuple.begin(), result);
+					p->dump();
 					return ptr + p->_entries[result]._index;
 				}
 				ptr += PAGE_SIZE;
@@ -310,6 +342,11 @@ namespace db {
 				_keeper.loosen(addr);
 				--_relation._bCount;
 			}
+		}
+
+		inline address reallocate(address addr, Tuple &tuple) {
+			free(addr);
+			return allocate(tuple);
 		}
 
 		/*void unionOp();

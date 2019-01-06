@@ -191,7 +191,7 @@ namespace db {
 			bool flag = false;
 			auto result = _translator(addr, flag);
 			if (!flag) {
-				result = _drive.allocate();
+				result = _drive.allocate(addr, flag);
 				flag = _translator.link(addr, result);
 			}
 			return flag && _drive.put(value, result, false);
@@ -202,21 +202,29 @@ namespace db {
 			return getSoft(addr, value);
 		}
 
+		inline bool onHit(address addr, Page &value) {
+			return true;
+		}
+
 		inline bool onErase(address addr, Page &value) {
 			return putSoft(addr, value);
 		}
 
 		template<typename Type
 			, ns::keeper::check_base_t<VirtualPage, Type> * = nullptr
-		> inline std::shared_ptr<VirtualPage> holdSync(address addr, bool load = true) {
+		> inline std::shared_ptr<VirtualPage> holdSync(address addr, bool pin, bool load) {
 			auto &cache = _caches[getLevel(addr)];
 			bool flag = false;
+			auto miss = cache.hit(addr) == cache._ptrs.size();
 			auto p = cache.fetch<Type>(addr, PAGE_SIZE, flag, *this, addr, PAGE_SIZE);
 			if (!flag) {
 				throw std::runtime_error("[Keeper::holdSync]");
 			}
-			if (load) {
+			if (miss && load) {
 				p->load();
+			}
+			if (pin) {
+				p->pin();
 			}
 			return std::static_pointer_cast<VirtualPage>(p);
 		}
@@ -306,9 +314,9 @@ namespace db {
 
 		template<typename Type
 			, ns::keeper::check_base_t<VirtualPage, Type> * = nullptr
-		> inline std::future<std::shared_ptr<VirtualPage>> holdAsync(address addr, bool load = true) {
-			std::packaged_task<std::shared_ptr<VirtualPage>()> task([this, addr, load]() {
-				return std::move(this->holdSync<Type>(addr, load));
+		> inline std::future<std::shared_ptr<VirtualPage>> holdAsync(address addr, bool pin, bool load) {
+			std::packaged_task<std::shared_ptr<VirtualPage>()> task([this, pin, addr, load]() {
+				return std::move(this->holdSync<Type>(addr, pin, load));
 			});
 
 			auto result = task.get_future();
@@ -329,13 +337,9 @@ namespace db {
 		template<typename Type
 			, ns::keeper::check_base_t<VirtualPage, Type> * = nullptr
 		> inline std::shared_ptr<Type> hold(address addr, bool pin = true, bool load = true) {
-			auto result = holdAsync<Type>(addr, load);
+			auto result = holdAsync<Type>(addr, pin, load);
 			result.wait();
-			auto p = std::static_pointer_cast<Type>(result.get());
-			if (pin) {
-				p->pin();
-			}
-			return p;
+			return std::static_pointer_cast<Type>(result.get());
 		}
 
 		inline void loosen(address addr) {

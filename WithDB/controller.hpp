@@ -29,37 +29,167 @@ namespace db {
 		}, _relationMeta(_keeper, _relations["RelationMeta"])
 		, _attributeMeta(_keeper, _relations["AttributeMeta"])
 		, _indexMeta(_keeper, _relations["IndexMeta"]) {
-			// TODO: config
-			{
-				auto &relation = _relationMeta._relation;
-				relation.add("Name", db::VARCHAR_T, 255)
-					.add("Capacity", db::LONG_T)
-					.add("Begin", db::LONG_T)
-					.add("End", db::LONG_T)
-					.add("Ptr", db::LONG_T)
-					.add("FixedTupleSize", db::LONG_T)
-					.add("MaxTupleSize", db::LONG_T)
-					.add("TCount", db::LONG_T)
-					.add("BCount", db::LONG_T)
-					.format();
-				relation._capacity = BLOCK_CAPACITY;
-				relation._ptr = relation._begin = RELATION_META_INDEX * BLOCK_CAPACITY;
-				auto p = _keeper.hold<VirtualPage>(0);
-				relation._end = p->read<address>(0);
-				relation._tCount = p->read<size_t>(sizeof(address));
-				relation._bCount = p->read<size_t>(sizeof(address) + sizeof(size_t));
+			loadRelation();
+			loadAttribute();
+		}
+
+		inline ~MetadataGuard() {
+			dumpRelation();
+			dumpAttribute();
+		}
+
+		inline Relation toRelation(Tuple &tuple) {
+			Relation &relation = _relationMeta._relation;
+			Relation ret(relation.read<std::string>(tuple, 0));
+			ret._capacity = relation.read<address>(tuple, 1);
+			ret._begin = relation.read<address>(tuple, 2);
+			ret._end = relation.read<address>(tuple, 3);
+			ret._ptr = relation.read<address>(tuple, 4);
+			ret._fixedTupleSize = relation.read<address>(tuple, 5);
+			ret._maxTupleSize = relation.read<address>(tuple, 6);
+			ret._tCount = relation.read<size_t>(tuple, 7);
+			ret._bCount = relation.read<size_t>(tuple, 8);
+			return std::move(ret);
+		}
+		
+		inline Tuple toTuple(const Relation &relation, TupleContainer &container) {
+			container.resize(_relationMeta._relation.maxTupleSize());
+			return _relationMeta._relation.builder().start(container)
+				.build(relation._name, 0)
+				.build(relation._capacity, 1)
+				.build(relation._begin, 2)
+				.build(relation._end, 3)
+				.build(relation._ptr, 4)
+				.build(relation._fixedTupleSize, 5)
+				.build(relation._maxTupleSize, 6)
+				.build(relation._tCount, 7)
+				.build(relation._bCount, 8)
+				.result();
+		}
+		
+		inline bool addRelation(const Relation &relation, bool create = true) {
+			if (!create) {
+				_relations[relation._name] = relation;
+				return true;
 			}
-			
-			_relationMeta._relation._capacity = BLOCK_SIZE;
-			_attributeMeta._relation
+			TupleContainer tmp(0);
+			if (_relations.insert(std::make_pair(relation._name, relation)).second) {
+				Tuple t = toTuple(relation, tmp);
+				_relationMeta.allocate(t);
+				return false;
+			}
+			return false;
+		}
+
+		inline void loadRelation() {
+			// TODO: config trush code
+			auto &relation = _relationMeta._relation;
+			relation.add("Name", db::VARCHAR_T, 255)
+				.add("Capacity", db::LONG_T)
+				.add("Begin", db::LONG_T)
+				.add("End", db::LONG_T)
+				.add("Ptr", db::LONG_T)
+				.add("FixedTupleSize", db::LONG_T)
+				.add("MaxTupleSize", db::LONG_T)
+				.add("TCount", db::LONG_T)
+				.add("BCount", db::LONG_T)
+				.format();
+			relation._capacity = BLOCK_CAPACITY;
+			relation._ptr = relation._begin = RELATION_META_INDEX * BLOCK_CAPACITY;
+			auto p = _keeper.hold<VirtualPage>(0);
+			relation._end = p->read<address>(0);
+			relation._tCount = p->read<size_t>(sizeof(address));
+			relation._bCount = p->read<size_t>(sizeof(address) + sizeof(size_t));
+			p->unpin();
+			p.reset();
+			if (!relation._tCount) {
+				init();
+			}
+			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				addRelation(toRelation(tuple), false);
+			});
+		}
+	
+		inline void dumpRelation() {
+			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				Relation relation = toRelation(tuple);
+				Relation current = _relations[relation._name];
+				tuple = toTuple(current, tuple._container);
+				_relationMeta.reallocate(addr, tuple);
+			});
+			auto p = _keeper.hold<VirtualPage>(0);
+			auto &relation = _relationMeta._relation;
+			p->write(relation._end, 0);
+			p->write(relation._tCount, sizeof(address));
+			p->write(relation._bCount, sizeof(address) + sizeof(size_t));
+			p->dump();
+		}
+
+		inline void init() {
+			auto &relation = _attributeMeta._relation;
+			relation.add("RelationName", db::VARCHAR_T, 255)
 				.add("Name", db::VARCHAR_T, 255)
 				.add("Type", db::INT_T)
 				.add("Size", db::INT_T)
-				.add("Index", db::INT_T)
+				.add("Index", db::LONG_T)
 				.add("Offset", db::INT_T)
-				.add("VCount", db::INT_T)
+				.add("VCount", db::LONG_T)
 				.format();
+			relation._capacity = BLOCK_CAPACITY;
+			relation._ptr = relation._begin = ATTRIBUTE_META_INDEX * BLOCK_CAPACITY;
+			addRelation(relation);
 		}
+
+		inline AttributeEntry toAttribute(Tuple &tuple) {
+			Relation &relation = _attributeMeta._relation;
+			AttributeEntry ret(
+				relation.read<std::string>(tuple, 1),
+				static_cast<attribute_enum>(relation.read<int>(tuple, 2))
+			);
+			ret._size = static_cast<page_address>(relation.read<int>(tuple, 3));
+			ret._index = static_cast<address>(relation.read<long long>(tuple, 4));
+			ret._offset = static_cast<page_address>(relation.read<int>(tuple, 5));
+			ret._vCount = static_cast<address>(relation.read<long long>(tuple, 6));
+			return std::move(ret);
+		}
+
+		inline Tuple toTuple(const AttributeEntry &entry, const std::string &relationName, TupleContainer &container) {
+			container.resize(_attributeMeta._relation.maxTupleSize());
+			return _attributeMeta._relation.builder().start(container)
+				.build(relationName, 0)
+				.build(entry._name, 1)
+				.build(entry._type, 2)
+				.build(entry._size, 3)
+				.build(entry._index, 4)
+				.build(entry._offset, 5)
+				.build(entry._vCount, 6)
+				.result();
+		}
+
+		inline bool addAttribute(const Relation &relation, bool create = true) {
+			if (!create) {
+				_relations[relation._name] = relation;
+				return true;
+			}
+			TupleContainer tmp(0);
+			if (_relations.insert(std::make_pair(relation._name, relation)).second) {
+				Tuple t = toTuple(relation, tmp);
+				_relationMeta.allocate(t);
+				return false;
+			}
+			return false;
+		}
+
+
+		inline void loadAttribute() {
+
+		}
+
+		inline void dumpAttribute() {
+
+		}
+
+		
 	};
 
 	struct Controller {

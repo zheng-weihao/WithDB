@@ -107,7 +107,7 @@ namespace db {
 
 		// statistic
 		size_t _tCount = 0;
-		size_t _bCount = 0;
+		size_t _bCount = 0; // TODO: change to _pCount
 
 		inline Relation(const std::string &name = "") : _name(name) {
 		}
@@ -121,7 +121,7 @@ namespace db {
 			if (isFormatted()) {
 				throw std::runtime_error("[Relation::add]");
 			}
-			_attributes.emplace_back(args);
+			_attributes.emplace_back(args...);
 			return *this;
 		}
 
@@ -202,7 +202,7 @@ namespace db {
 
 		template<typename Type>
 		inline Type read(Tuple &tuple, const std::string name) {
-			return _attributes.read<Type>(tuple, _map[name]);
+			return read<Type>(tuple, _map[name]);
 		}
 
 		struct TupleBuilder {
@@ -272,8 +272,9 @@ namespace db {
 				return build(value, _map[name]);
 			}
 
+			// TODO: move place
 			template<typename Type>
-			inline void write(Tuple &tuple, AttributeEntry &entry, Type value) {
+			inline static void write(Tuple &tuple, AttributeEntry &entry, Type value) {
 				if (entry._size != sizeof(Type)) {
 					// simple type size checking without reflection for efficiency
 					// TODO: maybe add RTTI checking in the future
@@ -282,7 +283,7 @@ namespace db {
 				tuple.write(value, entry._offset);
 			}
 
-			inline void write(Tuple &tuple, AttributeEntry &entry, const std::string &value) {
+			inline static void write(Tuple &tuple, AttributeEntry &entry, const std::string &value) {
 				if (entry._size < value.size()) {
 					throw std::runtime_error("[TupleBuilder::write]");
 				}

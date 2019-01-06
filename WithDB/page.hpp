@@ -75,6 +75,7 @@ namespace db {
 			} else {
 				throw std::runtime_error("[BasicPage::operator=]");
 			}
+			return *this;
 		}
 
 		inline BasicPage &operator=(BasicPage &&other) {
@@ -84,6 +85,7 @@ namespace db {
 			} else {
 				throw std::runtime_error("[BasicPage::operator=]");
 			}
+			return *this;
 		}
 
 		inline size_type size() { return _end - _begin; }
