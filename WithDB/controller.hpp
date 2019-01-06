@@ -29,13 +29,91 @@ namespace db {
 		}, _relationMeta(_keeper, _relations["RelationMeta"])
 		, _attributeMeta(_keeper, _relations["AttributeMeta"])
 		, _indexMeta(_keeper, _relations["IndexMeta"]) {
-			loadRelation();
-			loadAttribute();
+			load();
 		}
 
 		inline ~MetadataGuard() {
-			dumpRelation();
-			dumpAttribute();
+			dump();
+		}
+
+		inline void load() {
+			// TODO: config trush code
+			auto &r = _relationMeta._relation;
+			r.add("Name", db::VARCHAR_T, 255)
+				.add("Capacity", db::LONG_T)
+				.add("Begin", db::LONG_T)
+				.add("End", db::LONG_T)
+				.add("Ptr", db::LONG_T)
+				.add("FixedTupleSize", db::LONG_T)
+				.add("MaxTupleSize", db::LONG_T)
+				.add("TCount", db::LONG_T)
+				.add("BCount", db::LONG_T)
+				.format();
+			auto &a = _attributeMeta._relation;
+			a.add("RelationName", db::VARCHAR_T, 255)
+				.add("Name", db::VARCHAR_T, 255)
+				.add("Type", db::INT_T)
+				.add("Size", db::INT_T)
+				.add("Index", db::LONG_T)
+				.add("Offset", db::INT_T)
+				.add("VCount", db::LONG_T)
+				.format();
+			r._capacity = BLOCK_CAPACITY;
+			r._ptr = r._begin = RELATION_META_INDEX * BLOCK_CAPACITY;
+			a._capacity = BLOCK_CAPACITY;
+			a._ptr = a._begin = ATTRIBUTE_META_INDEX * BLOCK_CAPACITY;
+			auto p = _keeper.hold<VirtualPage>(0);
+			r._end = p->read<address>(0);
+			r._tCount = p->read<size_t>(sizeof(address));
+			r._bCount = p->read<size_t>(sizeof(address) + sizeof(size_t));
+			a._end = p->read<address>(sizeof(address) + 2 * sizeof(size_t));
+			a._tCount = p->read<size_t>(2 * sizeof(address) + 2 * sizeof(size_t));
+			a._bCount = p->read<size_t>(2 * sizeof(address) + 3 * sizeof(size_t));
+			p->unpin();
+			p.reset();
+			if (!a._end) {
+				_keeper._translator._params[0].first = 1;
+				r._end = r._begin;
+				a._end = a._begin;
+			}
+			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				Relation relation = toRelation(tuple);
+				addRelation(relation, false);
+			});
+			_attributeMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				AttributeEntry entry = toAttribute(tuple);
+				addAttribute(entry, _attributeMeta._relation.read<std::string>(tuple, 0));
+			});
+			for (auto &p : _relations) {
+				p.second.format();
+			}
+		}
+
+		inline void dump() {
+			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				auto relation = toRelation(tuple);
+				Relation current = _relations[relation._name];
+				tuple = toTuple(current, tuple._container);
+				_relationMeta.reallocate(addr, tuple);
+			});
+			_attributeMeta.traverseTuple([this](Tuple &tuple, address addr) {
+				auto name = _attributeMeta._relation.read<std::string>(tuple, 0);
+				auto entry = toAttribute(tuple);
+				auto &relation = _relations[name];
+				AttributeEntry current = relation._attributes[relation._map[entry._name]];
+				tuple = toTuple(current, name, tuple._container);
+				_relationMeta.reallocate(addr, tuple);
+			});
+			auto p = _keeper.hold<VirtualPage>(0);
+			auto &r = _relationMeta._relation;
+			p->write(r._end, 0);
+			p->write(r._tCount, sizeof(address));
+			p->write(r._bCount, sizeof(address) + sizeof(size_t));
+			auto &a = _attributeMeta._relation;
+			p->write(a._end, sizeof(address) + 2 * sizeof(size_t));
+			p->write(a._tCount, 2 * sizeof(address) + 2 * sizeof(size_t));
+			p->write(a._bCount, 2 * sizeof(address) + 3 * sizeof(size_t));
+			p->dump();
 		}
 
 		inline Relation toRelation(Tuple &tuple) {
@@ -67,77 +145,24 @@ namespace db {
 				.result();
 		}
 		
-		inline bool addRelation(const Relation &relation, bool create = true) {
+		inline bool addRelation(Relation &relation, bool create = true) {
 			if (!create) {
 				_relations[relation._name] = relation;
 				return true;
 			}
-			TupleContainer tmp(0);
-			if (_relations.insert(std::make_pair(relation._name, relation)).second) {
-				Tuple t = toTuple(relation, tmp);
-				_relationMeta.allocate(t);
+			if (!relation.isFormatted() || !_relations.insert(std::make_pair(relation._name, relation)).second) {
 				return false;
 			}
-			return false;
-		}
-
-		inline void loadRelation() {
-			// TODO: config trush code
-			auto &relation = _relationMeta._relation;
-			relation.add("Name", db::VARCHAR_T, 255)
-				.add("Capacity", db::LONG_T)
-				.add("Begin", db::LONG_T)
-				.add("End", db::LONG_T)
-				.add("Ptr", db::LONG_T)
-				.add("FixedTupleSize", db::LONG_T)
-				.add("MaxTupleSize", db::LONG_T)
-				.add("TCount", db::LONG_T)
-				.add("BCount", db::LONG_T)
-				.format();
-			relation._capacity = BLOCK_CAPACITY;
-			relation._ptr = relation._begin = RELATION_META_INDEX * BLOCK_CAPACITY;
-			auto p = _keeper.hold<VirtualPage>(0);
-			relation._end = p->read<address>(0);
-			relation._tCount = p->read<size_t>(sizeof(address));
-			relation._bCount = p->read<size_t>(sizeof(address) + sizeof(size_t));
-			p->unpin();
-			p.reset();
-			if (!relation._tCount) {
-				init();
+			TupleContainer tmp(0);
+			{
+				Tuple t = toTuple(relation, tmp);
+				_relationMeta.allocate(t);
 			}
-			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
-				addRelation(toRelation(tuple), false);
-			});
-		}
-	
-		inline void dumpRelation() {
-			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
-				Relation relation = toRelation(tuple);
-				Relation current = _relations[relation._name];
-				tuple = toTuple(current, tuple._container);
-				_relationMeta.reallocate(addr, tuple);
-			});
-			auto p = _keeper.hold<VirtualPage>(0);
-			auto &relation = _relationMeta._relation;
-			p->write(relation._end, 0);
-			p->write(relation._tCount, sizeof(address));
-			p->write(relation._bCount, sizeof(address) + sizeof(size_t));
-			p->dump();
-		}
-
-		inline void init() {
-			auto &relation = _attributeMeta._relation;
-			relation.add("RelationName", db::VARCHAR_T, 255)
-				.add("Name", db::VARCHAR_T, 255)
-				.add("Type", db::INT_T)
-				.add("Size", db::INT_T)
-				.add("Index", db::LONG_T)
-				.add("Offset", db::INT_T)
-				.add("VCount", db::LONG_T)
-				.format();
-			relation._capacity = BLOCK_CAPACITY;
-			relation._ptr = relation._begin = ATTRIBUTE_META_INDEX * BLOCK_CAPACITY;
-			addRelation(relation);
+			for (auto &entry : relation._attributes) {
+				Tuple t = toTuple(entry, relation._name, tmp);
+				_attributeMeta.allocate(t);
+			}
+			return true;
 		}
 
 		inline AttributeEntry toAttribute(Tuple &tuple) {
@@ -166,30 +191,9 @@ namespace db {
 				.result();
 		}
 
-		inline bool addAttribute(const Relation &relation, bool create = true) {
-			if (!create) {
-				_relations[relation._name] = relation;
-				return true;
-			}
-			TupleContainer tmp(0);
-			if (_relations.insert(std::make_pair(relation._name, relation)).second) {
-				Tuple t = toTuple(relation, tmp);
-				_relationMeta.allocate(t);
-				return false;
-			}
-			return false;
+		inline bool addAttribute(const AttributeEntry &entry, const std::string &relationName) {
+			_relations[relationName]._attributes.push_back(entry);
 		}
-
-
-		inline void loadAttribute() {
-
-		}
-
-		inline void dumpAttribute() {
-
-		}
-
-		
 	};
 
 	struct Controller {
