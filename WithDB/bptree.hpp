@@ -48,20 +48,20 @@ namespace db {
 		}
 
 		void Set(size_t x) { //设置为1
-			int index = x / 8;
-			int temp = x % 8;
+			int index = static_cast<int>(x / 8);
+			int temp = static_cast<int>(x % 8);
 			_bits[index] |= (1 << temp);
 		}
 
 		void Reset(size_t x) {
-			int index = x / 8;
-			int temp = x % 8;
+			int index = static_cast<int>(x / 8);
+			int temp = static_cast<int>(x % 8);
 			_bits[index] &= ~(1 << temp);
 		}
 
 		bool Get(size_t x) {
-			int index = x / 8;
-			int temp = x % 8;
+			int index = static_cast<int>(x / 8);
+			int temp = static_cast<int>(x % 8);
 			if (_bits[index] & (1 << temp)) return 1;
 			else return 0;
 		}

@@ -19,7 +19,7 @@ namespace db {
 		}
 
 		address fetch(T key) {
-			return tr->search(T);
+			return tr->search(key);
 		}
 
 		void allocate(T key, address value) {

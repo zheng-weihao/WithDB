@@ -153,10 +153,12 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="bptree.hpp" />
     <ClInclude Include="cache.hpp" />
     <ClInclude Include="controller.hpp" />
     <ClInclude Include="drive.hpp" />
     <ClInclude Include="endian.hpp" />
+    <ClInclude Include="index_guard.hpp" />
     <ClInclude Include="keeper.hpp" />
     <ClInclude Include="page.hpp" />
     <ClInclude Include="pch.h" />

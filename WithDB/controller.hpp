@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <map>
 
 namespace db {
 	struct MetadataGuard {
@@ -18,7 +19,7 @@ namespace db {
 
 		Keeper &_keeper;
 		std::unordered_map<std::string, Relation> _relations;
-		std::unordered_map<std::pair<std::string, size_t>, address> _indexes;
+		std::map<std::pair<std::string, size_t>, address> _indexes;
 		RelationGuard _relationMeta;
 		RelationGuard _attributeMeta;
 		RelationGuard _indexMeta;
@@ -82,7 +83,7 @@ namespace db {
 				_keeper._translator._params[0].first = 1;
 				r._end = r._begin;
 				a._end = a._begin;
-				i._end = i._end;
+				i._end = i._begin;
 			}
 			_relationMeta.traverseTuple([this](Tuple &tuple, address addr) {
 				Relation relation = toRelation(tuple);
@@ -217,6 +218,7 @@ namespace db {
 
 		inline bool addAttribute(const AttributeEntry &entry, const std::string &relationName) {
 			_relations[relationName]._attributes.push_back(entry);
+			return true;
 		}
 	
 		inline address toIndex(Tuple &tuple, std::string &relationName, size_t index) {
@@ -239,202 +241,162 @@ namespace db {
 			TupleContainer tmp(0);
 			Tuple t = toTuple(relationName, index, ptr, tmp);
 			_indexMeta.allocate(t);
+			return true;
 		}
 	};
 
 	struct Controller {
+		constexpr static size_t DATA_BLOCK_CAPACITY = SEGMENT_SIZE / 8;
 		Keeper _keeper;
 		MetadataGuard _metadata;
-		std::unordered_map<std::string, RelationGuard> _relations;
-		std::unordered_map<std::pair<std::string, size_t>, IndexGuard<int>> _intIndexes;
-		std::unordered_map<std::pair<std::string, size_t>, IndexGuard<std::string>> _stringIndexes;
+		std::unordered_map<std::string, RelationGuard *> _relations;
+		std::unordered_map<std::string, IndexGuard<int> *> _intIndexes;
+		std::unordered_map<std::string, IndexGuard<std::string> *> _stringIndexes;
 
-		Controller(const char *path, bool truncate = false): _keeper(path, truncate) {
+		Controller(const char *path, bool truncate = false): _keeper(path, truncate), _metadata(_keeper) {
 			_keeper.start();
 			_metadata.load();
 			for (auto & p: _metadata._relations) {
 				if (p.first != "RelationMeta" && p.first != "AttributeMeta" && p.first != "IndexMeta") {
-					_relations.insert(make_pair(p.first, RelationGuard(_keeper, p.second)));
+					_relations[p.first] = new RelationGuard(_keeper, p.second);
 				}
 			}
 			for (auto &p : _metadata._indexes) {
 				auto ptr = p.second;
-				auto type = _relations[p.first.first]._relation._attributes[p.first.second]._type;
+				auto type = _relations[p.first.first]->_relation._attributes[p.first.second]._type;
 				if (type == INT_T) {
-					_intIndexes[p.first] = IndexGuard<int>(&_keeper, p.second);
+					_intIndexes[p.first.first + std::to_string(p.first.second)] = new IndexGuard<int>(&_keeper, p.second);
 				} else {
-					_stringIndexes[p.first] = IndexGuard <std::string> (&_keeper, p.second);
+					_stringIndexes[p.first.first + std::to_string(p.first.second)] = new IndexGuard<std::string>(&_keeper, p.second);
 				}
 			}
+			_keeper._translator._params[0].first = 1;
 		}
 
 		~Controller() {
+			for (auto &p : _intIndexes) {
+				delete p.second;
+			}
 			_intIndexes.clear();
+			for (auto &p : _stringIndexes) {
+				delete p.second;
+			}
 			_stringIndexes.clear();
+			for (auto &p : _relations) {
+				delete p.second;
+			}
 			_relations.clear();
 			_metadata.dump();
 			_keeper.close();
 		}
 
-		void createRelation
-
-		void createIndex(std::string relationName, type t) {
-			switch (type) {
-			case int:
-				IndexGuard<int> igg(_keeper);
-				_intIndexes[std::make_pair(rel, attr)] = igg;
-				case string;
-					IndexGuard<string> igg(_keeper);
-					_stringIndexes[std::make_pair(rel, attr)] = igg;
+		void createRelation(Relation &relation) {
+			auto size = _keeper._translator._params[0].first;
+			relation._capacity = DATA_BLOCK_CAPACITY;
+			relation._ptr = relation._begin = relation._end 
+				= db::Translator::segmentBegin(db::DATA_SEG) * db::SEGMENT_SIZE + size * DATA_BLOCK_CAPACITY;
+			if (relation._begin == db::Translator::segmentEnd(db::DATA_SEG)) {
+				throw std::runtime_error("[Controller::createRelation]");
 			}
-			address addr = igg.iroot;
-			addIndex(rel, attr, t, addr);
-
+			_metadata.addRelation(relation);
+			_relations[relation._name] = new RelationGuard(_keeper, _metadata._relations[relation._name]);
 		}
 
-		address fetchIndex(string r, size_t , string key) {
-			return tr->search(T);
-		}
-		address fetch(string r, string a, int key) {
-			return tr->search(T);
-		}
-
-
-		address put(const std::string &row, address start = 0) {
-			std::stringstream ss(row);
-			std::string item;
-			int i = 0;
-			db::TupleBuilder builder;
-			builder.set_table(table);
-			builder.start();
-			while (std::getline(ss, item, '|')) {
-				attribute_enum e = (*table)[i].get_type();
-				switch (e) {
-				case db::CHAR_T:
-				case db::VARCHAR_T:
-				case db::DATE_T:
-					builder.set(item, i);
-					break;
-				case db::INT_T:
-					builder.set(std::stoi(item), i);
-					break;
-				case db::LONG_T:
-					builder.set(std::stoll(item), i);
-					break;
-				case db::FLOAT_T:
-					builder.set(std::stof(item), i);
-					break;
-				case db::DOUBLE_T:
-					builder.set(std::stod(item), i);
-					break;
-				case db::BLOB_T:
-				default:
-					throw std::runtime_error("[Controller::put] unknown type");
-				}
-				++i;
+		void createIndex(std::string relationName, size_t index) {
+			address ptr = 0;
+			auto type = _relations[relationName]->_relation._attributes[index]._type;
+			if (type == INT_T) {
+				auto &tmp = _intIndexes[relationName + std::to_string(index)] = new IndexGuard<int>(&_keeper);
+				ptr = tmp->iroot;
+			} else {
+				auto &tmp = _stringIndexes[relationName + std::to_string(index)] = new IndexGuard<std::string>(&_keeper);
+				ptr = tmp->iroot;
 			}
-
-			auto out = builder.get();
-			builder.reset();
-			address ret = 0;
-
-			for (db::address addr = start; addr < SEGMENT_SIZE; addr += db::PAGE_SIZE) {
-				db::TuplePage p(std::move(k.hold(addr)));
-				try {
-					p.load();
-				} catch (std::runtime_error e) {
-					p.init();
-				}
-				try {
-					auto result = p.allocate(static_cast<page_address>(out->size()));
-					auto pa = p.get(result);
-					p.copy_from(out->begin(), pa.first, pa.second);
-					ret = p.addr + result;
-					break;
-				} catch (std::runtime_error e) {
-					// std::cerr << e.what() << endl;
-				}
-			}
-			return ret;
+			_metadata.addIndex(relationName, index, ptr);
 		}
 
-		void put_from_file(const std::string &filename, bool all_log = true) {
-			std::fstream fs(filename);
-			std::string row;
-			int counter = 0;
-			address result = 0;
-			while (std::getline(fs, row)) {
-				result = put(row, (result / PAGE_SIZE) * PAGE_SIZE);
-				if (all_log) {
-					std::cerr << "put log in address " << result << std::endl;
-				}
-				++counter;
+		RelationGuard &relationGuard(const std::string &name) {
+			if (name == "RelationMeta") {
+				return _metadata._relationMeta;
+			} else if (name == "AttributeMeta") {
+				return _metadata._attributeMeta;
+			} else if (name == "RelationMeta") {
+				return _metadata._indexMeta;
+			} else {
+				return *_relations[name];
 			}
-			std::cerr << "put success, total = " << counter << std::endl;
 		}
 
-		std::string get(address addr) {
-			db::TuplePage p(std::move(k.hold((addr / PAGE_SIZE) * PAGE_SIZE)));
-			std::stringstream ss;
-			try {
-				p.load();
-			} catch (std::runtime_error e) {
-				return ss.str();
-			}
-			auto pa = p.get(static_cast<page_address>(addr % PAGE_SIZE));
-			if (pa.second == 0) {
-				return ss.str();
-			}
-			db::tuple tmp(pa.second - pa.first);
-			p.copy_to(tmp.begin(), pa.first, pa.second);
-			for (int i = 0; i < table->size(); ++i) {
-				attribute_enum e = (*table)[i].get_type();
-				switch (e) {
-				case db::CHAR_T:
-				case db::VARCHAR_T:
-				case db::DATE_T:
-					ss << table->get<std::string>(tmp, i);
-					break;
-				case db::INT_T:
-					ss << table->get<int_type>(tmp, i);
-					break;
-				case db::LONG_T:
-					ss << table->get<long_type>(tmp, i);
-					break;
-				case db::FLOAT_T:
-					ss << table->get<float_type>(tmp, i);
-					break;
-				case db::DOUBLE_T:
-					ss << table->get<double_type>(tmp, i);
-					break;
-				case db::BLOB_T:
-				default:
-					throw std::runtime_error("[Controller::get] unknown type");
-				}
-				ss << '\t';
-			}
-			return ss.str();
+		inline address fetchIndex(const std::string & rel, size_t index, const std::string &key) {
+			return _stringIndexes[rel + std::to_string(index)]->fetch(key);
 		}
 
-		int get_all(int br = 0, address start = 0) {
-			int counter = 0;
-			for (auto addr = start; addr >= 0; addr += PAGE_SIZE) {
-				TuplePage p(std::move(k.hold(addr)));
-				try {
-					p.load();
-				} catch (std::runtime_error e) {
-					break;
-				}
-				
-				for (auto &entry : p._entries) {
-					std::cout << get(p.addr + entry._index) << std::endl;
-					++counter;
-					if (br && counter % br == 0) {
-						std::getchar();
-					}
+		inline address fetchIndex(const std::string & rel, size_t index, int key) {
+			return _intIndexes[rel + std::to_string(index)]->fetch(key);
+		}
+
+		inline void allocateIndex(const std::string & rel, size_t index, const std::string &key, address value) {
+			_stringIndexes[rel + std::to_string(index)]->allocate(key, value);
+		}
+
+		inline void allocateIndex(const std::string & rel, size_t index, int key, address value) {
+			_intIndexes[rel + std::to_string(index)]->allocate(key, value);
+		}
+
+		inline void freeIndex(const std::string & rel, size_t index, const std::string &key) {
+			_stringIndexes[rel + std::to_string(index)]->free(key);
+		}
+
+		inline void freeIndex(const std::string & rel, size_t index, int key) {
+			_intIndexes[rel + std::to_string(index)]->free(key);
+		}
+
+		inline void reallocateIndex(const std::string & rel, size_t index, const std::string &key, address value) {
+			_stringIndexes[rel + std::to_string(index)]->reallocate(key, value);
+		}
+
+		inline void reallocateIndex(const std::string & rel, size_t index, int key, address value) {
+			_intIndexes[rel + std::to_string(index)]->reallocate(key, value);
+		}
+
+		inline void printIndex(const std::string & rel, size_t index) {
+			auto p = rel + std::to_string(index);
+			{
+				auto iter = _stringIndexes.find(p);
+				if (iter != _stringIndexes.end()) {
+					iter->second->print(15);
+					return;
 				}
 			}
-			return counter;
+			{
+				auto iter = _intIndexes.find(p);
+				if (iter != _intIndexes.end()) {
+					iter->second->print(5);
+					return;
+				}
+			}
+			throw std::runtime_error("[Controller::printIndex]");
+		}
+
+		inline Tuple fetchTuple(const std::string & rel, address addr, TupleContainer &container) {
+			return relationGuard(rel).fetch(addr, container);
+		}
+
+		inline address allocateTuple(const std::string & rel, Tuple &tuple) {
+			return relationGuard(rel).allocate(tuple);
+		}
+
+		inline void freeTuple(const std::string & rel, address addr) {
+			relationGuard(rel).free(addr);
+		}
+
+		inline address reallocateTuple(const std::string &rel, address addr, Tuple &tuple) {
+			return relationGuard(rel).reallocate(addr, tuple);
+		}
+
+		template<typename Function>
+		inline void traverseTuple(const std::string &rel, Function fn) {
+			relationGuard(rel).traverseTuple(fn);
 		}
 	};
 }

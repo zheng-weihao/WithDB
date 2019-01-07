@@ -51,6 +51,12 @@
     <ClInclude Include="controller.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="bptree.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="index_guard.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
