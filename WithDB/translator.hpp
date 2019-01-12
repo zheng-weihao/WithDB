@@ -1,21 +1,39 @@
 #pragma once
 
 #include "cache.hpp"
+#include "definitions.hpp"
 #include "drive.hpp"
 #include "page.hpp"
-#include "definitions.hpp"
 
+#include <array>
 #include <algorithm>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
-#include <vector>
+#include <unordered_map>
 
 namespace db {
+	constexpr segment_enum getSegmentEnum(address addr) {
+		if (addr < METADATA_SEG_END) {
+			return METADATA_SEG;
+		} else if (addr < BLOB_SEG_END) {
+			return BLOB_SEG;
+		} else if (addr < DATA_SEG_END) {
+			return DATA_SEG;
+		} else if (addr < INDEX_SEG_END) {
+			return INDEX_SEG;
+		} else if (addr < TEMP_SEG_END) {
+			return TEMP_SEG;
+		} else {
+			return DUMMY_SEG;
+		}
+	}
+
 	// TODO: declare segment usage in entry, only data segment is available for now
 	struct SegmentEntry {
 		drive_address _ptr;
-		std::int32_t _first, _second; // integer aurguement for different segment type to parse
-		inline SegmentEntry(drive_address ptr = 0, int first = 0, int second = 0) : _ptr(ptr), _first(first), _second(second) {
+		size_t _param; // integer parameter for different segment type to parse
+		inline SegmentEntry(drive_address ptr = 0, std::uint32_t param = 0) : _ptr(ptr), _param(param) {
 		}
 	};
 
@@ -24,50 +42,44 @@ namespace db {
 		constexpr static page_address DATABASE_NAME_END = 256;
 		constexpr static page_address DATABASE_NAME_CAPACITY = DATABASE_NAME_END - DATABASE_NAME_BEGIN - 1; // robust
 
-		// deprecate
-		// constexpr static page_address SYSTEM_SEGMENT_TABLE_SIZE_POS = 252;
-		// constexpr static page_address USER_SEGMENT_TABLE_SIZE_POS = 254;
-
 		constexpr static page_address SEGMENT_PTR_POS = 0;
-		constexpr static page_address SEGMENT_FIRST_POS = SEGMENT_PTR_POS + sizeof(drive_address);
-		constexpr static page_address SEGMENT_SECOND_POS = SEGMENT_FIRST_POS + sizeof(std::int32_t);
-		constexpr static page_address SEGMENT_SIZE = SEGMENT_SECOND_POS + sizeof(std::int32_t);
+		constexpr static page_address SEGMENT_PARAM_POS = SEGMENT_PTR_POS + sizeof(drive_address);
+		constexpr static page_address SEGMENT_SIZE = SEGMENT_PARAM_POS + sizeof(size_t);
 
 		constexpr static page_address SEGMENTS_BEGIN = DATABASE_NAME_END;
-		constexpr static page_address SEGMENTS_END = 4096;
+		constexpr static page_address SEGMENTS_END = PAGE_SIZE;
 		constexpr static page_address SEGMENTS_SIZE = (SEGMENTS_END - SEGMENTS_BEGIN) / SEGMENT_SIZE;
 
 		std::string _name;
-		std::vector<SegmentEntry> _segments;
+		std::array<SegmentEntry, SEGMENTS_SIZE> _segments;
 
 	public:
-		inline TranslatorEntryPage(Container &container, size_t first, size_t last) : Page(container, first, last) {
+		inline TranslatorEntryPage(Container &container) : Page(container) {
 		}
 
 		virtual bool load() {
-			_name = read<std::string>(DATABASE_NAME_BEGIN, DATABASE_NAME_END);
-			_segments.resize(SEGMENTS_SIZE);
-			for (size_t i = 0; i != _segments.size(); ++i) {
+			_name = read<string>(DATABASE_NAME_BEGIN, DATABASE_NAME_END);
+			size_t i = 0;
+			for (auto &entry : _segments) {
 				auto offset = SEGMENTS_BEGIN + i * SEGMENT_SIZE;
 				_segments[i]._ptr = read<drive_address>(offset + SEGMENT_PTR_POS);
-				_segments[i]._first = read<std::int32_t>(offset + SEGMENT_FIRST_POS);
-				_segments[i]._second = read<std::int32_t>(offset + SEGMENT_SECOND_POS);
+				_segments[i]._param = read<size_t>(offset + SEGMENT_PARAM_POS);
+				++i;
 			}
 			return true;
 		}
 
 		virtual bool dump() {
-			if (_name.size() > DATABASE_NAME_CAPACITY || _segments.size() > SEGMENTS_SIZE) {
+			if (_name.size() > DATABASE_NAME_CAPACITY) {
 				// throw std::runtime_error("[TranslatorEntryPage::dump] segment_table are out of range");
 				return false;
 			}
 			write(_name, DATABASE_NAME_BEGIN, DATABASE_NAME_END);
 
-			page_address i = SEGMENTS_BEGIN;
+			size_t i = SEGMENTS_BEGIN;
 			for (auto &entry : _segments) {
 				write(entry._ptr, i + SEGMENT_PTR_POS);
-				write(entry._first, i + SEGMENT_FIRST_POS);
-				write(entry._second, i + SEGMENT_SECOND_POS);
+				write(entry._param, i + SEGMENT_PARAM_POS);
 				i += SEGMENT_SIZE;
 			}
 			return true;
@@ -84,6 +96,7 @@ namespace db {
 
 	struct MappingPage: Page {
 		constexpr static page_address NEXT_POS = 0;
+		constexpr static size_t HEADER_SIZE = NEXT_POS + sizeof(drive_address);
 
 		constexpr static page_address MAPPINGS_SIZE_POS = 14;
 
@@ -101,12 +114,16 @@ namespace db {
 		drive_address _next;
 		std::vector<MappingEntry> _mappings;
 
-		inline MappingPage(Container &container, size_t first, size_t last) : Page(container, first, last) {
-			_next = 0;
+		inline MappingPage(Container &container, size_t pos) : Page(container, pos), _next(0) {
 		}
 
 		virtual bool load() {
 			_next = read<drive_address>(NEXT_POS);
+			
+			if (size() == HEADER_SIZE) {
+				return true;
+			}
+
 			_mappings.resize(read<page_address>(MAPPINGS_SIZE_POS));
 			
 			for (page_address i = 0; i != _mappings.size(); ++i) {
@@ -144,23 +161,24 @@ namespace db {
 		}
 	};
 	
-	// TODO: load all mapping pages without Cache in manager, need to improve
+	// TODO: current: load all mapping pages without Cache in manager, need to improve, partial load some of the mapping pages
 	// TODO: algorithm cannot recover from system fault
 	struct Translator: BasicCacheHandler<address, drive_address> {
 	private:
-		inline static size_t cacheHash(address addr) {
+		constexpr static size_t cacheHash(address addr) {
 			return (static_cast<size_t>(addr) >> PAGE_BIT_LENGTH) * 517619 % 69061; // magic prime number
 		}
 	public:
+		using Cache = db::Cache<address, drive_address, Translator, HashCacheCore<address, cacheHash>>;
 		Drive &_drive;
-		std::string _name;
-		Cache<address, drive_address, Translator, HashCacheCore<address, cacheHash>> _lookaside;
-		std::vector<std::pair<std::int32_t, std::int32_t>> _params;
-		std::vector<std::vector<MappingEntry>> _mappings; // convenient to change structure
-		
+		TranslatorEntryPage _entry;
+		std::vector<std::vector<MappingEntry>> _mappings; // TODO: temporary structure change structure to partial load
+		Cache _lookaside;
 	public:
-		inline Translator(Drive &drive, size_t capacity = LOOKASIDE_SIZE) : _drive(drive), _lookaside(*this) {
-			if (_drive.isOpen() && capacity) {
+		inline Translator(Drive &drive, size_t capacity = TRANSLATOR_LOOKASIDE_SIZE) : _drive(drive), _entry(_drive.appendFixed(PAGE_SIZE)), _lookaside(*this, capacity) {
+			auto pos = _drive.fixedSize() - PAGE_SIZE;
+			_entry.activate(pos, pos + PAGE_SIZE);
+			if (_drive.isOpen()) {
 				open(capacity);
 			}
 		}
@@ -170,16 +188,15 @@ namespace db {
 		}
 
 		inline bool isOpen() {
-			return _lookaside.isOpen();
+			return _mappings.size() != 0;
 		}
 
-		inline void open(size_t capacity = LOOKASIDE_SIZE) {
+		inline void open(size_t capacity = TRANSLATOR_LOOKASIDE_SIZE) {
 			if (isOpen() || !_drive.isOpen()) {
 				throw std::runtime_error("[Translator::open]");
 			}
-			_lookaside.open(capacity);
-			_params.resize(MAX_SEG_CAPACITY);
 			_mappings.resize(MAX_SEG_CAPACITY);
+			_lookaside.open(capacity);
 			load();
 		}
 
@@ -188,24 +205,15 @@ namespace db {
 				return;
 			}
 			dump();
-			_mappings.clear();
-			_params.clear();
 			_lookaside.close();
+			_mappings.clear();
 		}
 
-		void load() {
-			Container c;
-			TranslatorEntryPage entry(c, 0, PAGE_SIZE);
-			_drive.get(entry, FIXED_TRANSLATOR_ENTRY_PAGE);
-			_name = entry._name;
-			//if (!entry._segments[0]._first && !entry._segments[0]._second) { // special check using metadata segment
-			//	return; // save time
-			//} // DEBUG
-			MappingPage m(c, 0, PAGE_SIZE);
+		inline void load() {
+			_drive.get(_entry, FIXED_TRANSLATOR_ENTRY_PAGE);
+			MappingPage m(_entry._container, _entry._begin);
 			size_t i = 0;
-			for (auto &seg : entry._segments) {
-				_params[i].first = seg._first;
-				_params[i].second = seg._second;
+			for (auto &seg : _entry._segments) {
 				for (auto ptr = seg._ptr; ptr; ptr = m._next) {
 					_drive.get(m, ptr);
 					_mappings[i].insert(_mappings[i].end(), m._mappings.begin(), m._mappings.end());
@@ -214,17 +222,10 @@ namespace db {
 			}
 		}
 
-		void dump() {
-			Container c;
-			TranslatorEntryPage entry(c, 0, PAGE_SIZE);
-			MappingPage m(c, 0, PAGE_SIZE);
-			_drive.get(entry, FIXED_TRANSLATOR_ENTRY_PAGE);
-			entry._name = _name;
-
+		inline void dump() {
+			MappingPage m(_entry._container, _entry._begin);
 			size_t i = 0;
-			for (auto &seg : entry._segments) {
-				seg._first = _params[i].first;
-				seg._second = _params[i].second;
+			for (auto &seg : _entry._segments) {
 				auto iter = _mappings[i].begin(), e = _mappings[i].end();
 				auto ptr = seg._ptr;
 				if (iter == e) {
@@ -257,27 +258,27 @@ namespace db {
 						ptr = next;
 					}
 				}
+
+				m.resize(MappingPage::HEADER_SIZE); // partial load traverse
 				while (ptr) {
 					_drive.get(m, ptr);
 					_drive.free(ptr, true);
 					ptr = m._next;
 				}
+				m.resize(PAGE_SIZE);
 				++i;
 			}
-			_drive.put(entry, FIXED_TRANSLATOR_ENTRY_PAGE);
+			_drive.put(_entry, FIXED_TRANSLATOR_ENTRY_PAGE);
 		}
 
-		// TODO: free mapping page and free segment, pre-allocate segment
-		//void init() {
-		//	const segment_enum default_segment[] = { METADATA_SEG, DATA_SEG, BLOB_SEG, INDEX_SEG,};
-		//	for (auto i = 0; i != 4; ++i) {
-		//		add_segment(default_segment[i], default_segment_address(default_segment[i]));
-		//	}
-		//	save();
-		//}
+		inline string &name() { return _entry._name; }
+
+		inline size_t &param(address addr) {
+			return _entry._segments[addr / SEGMENT_SIZE]._param;
+		}
 
 		template<typename Function>
-		inline bool search(address addr, Function fn) { // TODO: need refine onInsert, link, unlink, relink shared logic
+		inline bool search(address addr, Function &fn) { // TODO: need refine onInsert, link, unlink, relink shared logic
 			constexpr auto cmp = [](const MappingEntry &a, const MappingEntry &b) {
 				return a._key < b._key;
 			};
@@ -342,7 +343,9 @@ namespace db {
 			if (pos == v.end() || pos->_key != pageIndex) {
 				return false;
 			}
-			_lookaside.discard(addr);
+			if (_lookaside.isOpen()) {
+				_lookaside.discard(addr);
+			}
 			v.erase(pos);
 			return true;
 		}
@@ -361,65 +364,32 @@ namespace db {
 			if (pos == v.end() || pos->_key != pageIndex) {
 				return false;
 			}
-			_lookaside.discard(addr);
+			if (_lookaside.isOpen()) {
+				_lookaside.discard(addr);
+			}
 			pos->_value = dest;
 			return true; 
 			// TODO: write back strategy
 		}
 
 		inline drive_address operator()(address addr, bool &flag) {
-			// return _lookaside.fetch(addr, flag);
+			if (_lookaside.isOpen()) {
+				drive_address tmp = 0;
+				flag = _lookaside.collect(addr, tmp);
+				return tmp;
+			}
 			drive_address ret = 0;
 			flag = onInsert(addr, ret);
 			return ret;
 		}
 
 		inline drive_address operator()(address addr) {
-			// return _lookaside.fetch(addr);
 			bool flag = false;
 			auto ret = operator()(addr, flag);
 			if (!flag) {
 				throw std::runtime_error("translator::operator()");
 			}
 			return ret;
-		}
-
-		constexpr static size_t segmentBegin(segment_enum e) {
-			switch (e) {
-			case db::DUMMY_SEG:
-				return 0;
-			case db::METADATA_SEG:
-				return 0;
-			case db::BLOB_SEG:
-				return segmentEnd(METADATA_SEG);
-			case db::DATA_SEG:
-				return segmentEnd(BLOB_SEG);
-			case db::INDEX_SEG:
-				return segmentEnd(DATA_SEG);
-			case db::TEMP_SEG:
-				return segmentEnd(INDEX_SEG);
-			default:
-				return 0;
-			}
-		}
-
-		constexpr static size_t segmentEnd(segment_enum e) {
-			switch (e) {
-			case db::DUMMY_SEG:
-				return 0;
-			case db::METADATA_SEG:
-				return segmentBegin(e) + METADATA_SEG_CAPACITY;
-			case db::BLOB_SEG:
-				return segmentBegin(e) + BLOB_SEG_CAPACITY;
-			case db::DATA_SEG:
-				return segmentBegin(e) + DATA_SEG_CAPACITY;
-			case db::INDEX_SEG:
-				return segmentBegin(e) + INDEX_SEG_CAPACITY;
-			case db::TEMP_SEG:
-				return segmentBegin(e) + TEMP_SEG_CAPACITY;
-			default:
-				return 0;
-			}
 		}
 	};
 }

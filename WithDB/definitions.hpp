@@ -1,10 +1,7 @@
 #pragma once
 
-#define NOMINMAX // defined for windows.h to use min max in algorithm stl with windows sdk
-
 #include <cstddef>
 #include <cstdint>
-#include <type_traits>
 #include <string>
 
 // DESGIN:
@@ -20,65 +17,45 @@
 // local variable => ptr for short
 
 namespace db {
-	// get the complement of the check(enable_if) SFINAE type
-	template<typename Check, typename Type = void>
-	struct check_not { using type = Type; };
-	template<typename Check>
-	struct check_not<Check, std::void_t<typename Check::type>> {};
-	template<typename Check>
-	using check_not_t = typename check_not<Check>::type;
-	// TODO: figure out why the code here doesn't work in template partial specialization
-	/*template<typename Check>
-	struct complement<Check, typename Check::type> {};*/
-
-	// transfrom check SFINAE type to value
-	template<typename Check, typename Type = void>
-	struct check_value : std::false_type {};
-	template<typename Check>
-	struct check_value<Check, std::void_t<typename Check::type>> : std::true_type {};
-	template<typename Check>
-	constexpr bool check_v = check_value<Check>::value;
-
-	// TODO: define switch structure for checking
-	// switch_type1_t<...Param>, switch_type2_t<...Param>, ..., switch_default_t<...Param>
-	// need a method to construct switch structure that have different template id to replace void_t below
-	// to simplify checking template parameters
-	/*template<typename Value, typename Iter>
-	struct switch_network_t : std::void_t<check_network_order_t<Value>, check_iterator_t<Value>> {};
-	template<typename Value, typename Iter>
-	struct switch_string_t : std::void_t<check_not_network_order_t<Value>, check_string_t<Value>, check_iterator_t<Iter>> {};
-	template<typename Value, typename Iter>
-	struct switch_default_t : std::void_t<check_not_network_order_t<Value>, check_not_string_t<Value>, check_iterator_t<Iter>> {};*/
-
-	// uint<Size> using for endian, might have other potential usage
-	template<std::size_t Size>
-	struct uint {};
-	template<> struct uint<1> { using type = std::uint8_t; };
-	template<> struct uint<2> { using type = std::uint16_t; };
-	template<> struct uint<4> { using type = std::uint32_t; };
-	template<> struct uint<8> { using type = std::uint64_t; };
-	template<std::size_t Size>
-	using uint_t = typename uint<Size>::type;
-
-	// container fetch index size type
+	// database size type in indexing
 	using size_t = std::size_t;
+	// database used string type
+	using string = std::string;
+	
+	// attribute type in memory
+	using element_t = char;
+	using char_t = std::string;
+	using varchar_t = std::string;
+	using date_t = std::string;
+	using int_t = std::int32_t;
+	using long_t = std::int64_t;
+	using float_t = float;
+	using double_t = double;
+
 	// timestamp type for MRU and other statistic
 	using timestamp = std::int64_t;
-	
+
 	// address type with usage
-	using drive_address = std::uint64_t;
 	using address = std::uint64_t;
+	using drive_address = std::uint64_t;
 	using cache_address = std::uint32_t; // useless, TODO: discuss about pointer swizzling
 	using page_address = std::uint16_t;
 
-	using element_type = char;
-	using char_type = std::string;
-	using varchar_type = std::string;
-	using date_type = std::string;
-	using int_type = std::int32_t;
-	using long_type = std::int64_t;
-	using float_type = float;
-	using double_type = double;
+	// attribute enum for naive RTTI
+	enum type_enum {
+		DUMMY_T,
+		CHAR_T, // can store '\0' in the string
+		VARCHAR_T, // can store '\0' in the string
+		INT_T,
+		LONG_T,
+		FLOAT_T,
+		DOUBLE_T,
+		DATE_T, // store date as 8 char element (char)
+		LOB_T,
+		BLOB_T,
+		CLOB_T,
+		NTBS_T, // null-terminate byte string (used in literal, ensure '\0' is not in the string and will find '\0' certainly at the end of string), other has 2 bound
+	};
 
 	enum segment_enum {
 		DUMMY_SEG,
@@ -88,54 +65,81 @@ namespace db {
 		INDEX_SEG,
 		TEMP_SEG,
 	};
-	using segment_enum_type = std::uint8_t;
 
-	enum attribute_enum {
-		DUMMY_T,
-		CHAR_T,
-		VARCHAR_T,
-		INT_T,
-		LONG_T,
-		FLOAT_T,
-		DOUBLE_T,
-		DATE_T,
-		BLOB_T,
-	};
-	using attribute_enum_type = std::uint8_t;
+	constexpr size_t MAX_STRING_SIZE = 0xffff;
 
-	constexpr size_t SEGMENT_BIT_LENGTH = 32;
-	constexpr address SEGMENT_SIZE = static_cast<address>(1) << SEGMENT_BIT_LENGTH;
-	constexpr size_t MAX_SEG_CAPACITY = 240; // decide by TranslatorEntryPage
-	constexpr size_t METADATA_SEG_CAPACITY = 1;
-	constexpr size_t BLOB_SEG_CAPACITY = 59;
-	constexpr size_t DATA_SEG_CAPACITY = 60;
-	constexpr size_t INDEX_SEG_CAPACITY = 40;
-	constexpr size_t TEMP_SEG_CAPACITY = MAX_SEG_CAPACITY - METADATA_SEG_CAPACITY - BLOB_SEG_CAPACITY - DATA_SEG_CAPACITY - INDEX_SEG_CAPACITY; // capacity left
-
-	constexpr size_t PAGE_BIT_LENGTH = 12;
-	constexpr address PAGE_SIZE = static_cast<address>(1) << PAGE_BIT_LENGTH;
-
+	// unchangable but important literals
 	constexpr address TUPLE_CAPACITY = 0xffff;
 
+	constexpr size_t PAGE_BIT_LENGTH = 12;
+	constexpr address PAGE_SIZE = 1ll << PAGE_BIT_LENGTH;
+
+	constexpr size_t SEGMENT_BIT_LENGTH = 32;
+	constexpr address SEGMENT_SIZE = 1ll << SEGMENT_BIT_LENGTH;
+
+	constexpr address NULL_ADDRESS = 0;
+
+	// changable literals
 	constexpr drive_address FIXED_DRIVE_ENTRY_PAGE = 0;
 	constexpr drive_address FIXED_TRANSLATOR_ENTRY_PAGE = FIXED_DRIVE_ENTRY_PAGE + PAGE_SIZE;
 	constexpr drive_address FIXED_SIZE = FIXED_TRANSLATOR_ENTRY_PAGE + PAGE_SIZE;
 
-	constexpr drive_address INIT_SIZE = PAGE_SIZE * 0x400;
 	constexpr drive_address INIT_SYSTEM_SIZE = PAGE_SIZE * 0;
-	constexpr drive_address INIT_USER_SIZE = INIT_SIZE - FIXED_SIZE - INIT_SYSTEM_SIZE;
+	constexpr drive_address INIT_USER_SIZE = PAGE_SIZE * 0;
+	constexpr drive_address INIT_SIZE = FIXED_SIZE + INIT_SYSTEM_SIZE + INIT_USER_SIZE;
 
 	constexpr drive_address EXPAND_SIZE = PAGE_SIZE * 1;
-	constexpr drive_address EXPAND_SYSTEM_SIZE = PAGE_SIZE * 10;
-	constexpr drive_address EXPAND_USER_SIZE = PAGE_SIZE * 100;
+	constexpr drive_address EXPAND_SYSTEM_SIZE = PAGE_SIZE * 1;
+	constexpr drive_address EXPAND_USER_SIZE = PAGE_SIZE * 0x200;
 
 	constexpr drive_address SHRINK_SIZE = PAGE_SIZE * 1;
 	constexpr drive_address SHRINK_SYSTEM_SIZE = PAGE_SIZE * 1;
 	constexpr drive_address SHRINK_USER_SIZE = PAGE_SIZE * 1;
 
-	constexpr size_t LOOKASIDE_SIZE = 1; // TODO: use lookaside to 0x800 when partial load mapping pages;
-	constexpr size_t KEEPER_CACHE_TOTAL_SIZE = 0x400;
+	constexpr size_t MAX_SEG_CAPACITY = 240; // max decide by TranslatorEntryPage structure
+	constexpr address DATABASE_CAPACITY = MAX_SEG_CAPACITY * SEGMENT_SIZE;
+
+	constexpr size_t METADATA_SEG_CAPACITY = 1;
+	constexpr address METADATA_SEG_BEGIN = 0;
+	constexpr address METADATA_SEG_END = METADATA_SEG_BEGIN + METADATA_SEG_CAPACITY * SEGMENT_SIZE;
+
+	constexpr size_t BLOB_SEG_CAPACITY = 59;
+	constexpr address BLOB_SEG_BEGIN = METADATA_SEG_END;
+	constexpr address BLOB_SEG_END = BLOB_SEG_BEGIN + BLOB_SEG_CAPACITY * SEGMENT_SIZE;
+
+	constexpr size_t DATA_SEG_CAPACITY = 60;
+	constexpr address DATA_SEG_BEGIN = BLOB_SEG_END;
+	constexpr address DATA_SEG_END = DATA_SEG_BEGIN + DATA_SEG_CAPACITY * SEGMENT_SIZE;
+
+	constexpr size_t INDEX_SEG_CAPACITY = 40;
+	constexpr address INDEX_SEG_BEGIN = DATA_SEG_END;
+	constexpr address INDEX_SEG_END = INDEX_SEG_BEGIN + INDEX_SEG_CAPACITY * SEGMENT_SIZE;
+
+	constexpr size_t TEMP_SEG_CAPACITY = MAX_SEG_CAPACITY - METADATA_SEG_CAPACITY - BLOB_SEG_CAPACITY - DATA_SEG_CAPACITY - INDEX_SEG_CAPACITY; // capacity left
+	constexpr address TEMP_SEG_BEGIN = 0;
+	constexpr address TEMP_SEG_END = DATABASE_CAPACITY;
+
+	constexpr size_t TRANSLATOR_LOOKASIDE_SIZE = 0; // lookaside closed TODO: use lookaside to 0x800 when partial load mapping pages;
+	
 	constexpr size_t KEEPER_CACHE_LEVEL = 3;
 	constexpr size_t KEEPER_CACHE_SIZES[KEEPER_CACHE_LEVEL] = { 0x40, 0xc0, 0x300 };
+	
+	constexpr size_t getCacheLevel(segment_enum seg) {
+		switch (seg) {
+		case db::METADATA_SEG:
+			return 0;
+		case db::BLOB_SEG:
+			return 1;
+		case db::DATA_SEG:
+			return 2;
+		case db::INDEX_SEG:
+			return 1;
+		case db::TEMP_SEG:
+			return 2;
+		default:
+			return KEEPER_CACHE_LEVEL;
+		}
+	}
+
 	// TODO: exception system
 }

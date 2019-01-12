@@ -4,11 +4,12 @@
 #include "utils.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
-#include <functional>
 #include <vector>
 
 // TODO: I think a better structure is a hash table with vector for metrics storing
@@ -32,6 +33,7 @@ namespace db {
 	// capacity == 0 represent closed status
 	//  = [](Address addr) {return static_cast<size_t>(addr) / PAGE_SIZE; }
 	// TODO: maybe core should keep index information for stored address
+	// should not save index in core because if value size is small or derived cache don't need a index id, it is a waste of time and space
 	template<typename Address>
 	using AddressHash = size_t(*)(Address);
 	template<typename Address, AddressHash<Address> Hash> // TODO: best practice to pass constexpr lambda
@@ -249,6 +251,7 @@ namespace db {
 			return addr;
 		}
 
+		// throw exception if not found
 		inline bool isPinned(Address addr) {
 			auto iter = _items.find(addr);
 			if (iter == _items.end()) {
@@ -257,6 +260,7 @@ namespace db {
 			return iter->second._pin;
 		}
 
+		// return false if not found
 		inline bool pin(Address addr) {
 			auto iter = _items.find(addr);
 			if (iter == _items.end()) {
@@ -268,6 +272,7 @@ namespace db {
 			return true;
 		}
 
+		// return false if not found
 		inline bool unpin(Address addr) {
 			auto iter = _items.find(addr);
 			if (iter == _items.end()) {
@@ -280,23 +285,51 @@ namespace db {
 		}
 	};
 
+	namespace ns::cache {
+		template<typename Base, typename Derived>
+		using check_base_t = std::enable_if_t<std::is_base_of_v<Base, Derived>>;
+	}
+
 	// universal interface to handle Cache insert-erase-hit event
 	// handler can change its own status for these operation
+	// args should not be complex
 	template<typename Address, typename Value>
 	struct BasicCacheHandler {
+		// flow down method
+		// derived return value designed for page polymorphism
+		// args... will is shared by all event handler as arguement but ignored by this basic handler in default
+		// derived class only need to override those handler has different logic
+		// create tmp instance by cache
+		template<typename Derived
+			, ns::cache::check_base_t<Value, Derived> * = nullptr
+			, typename... Args
+		> inline Derived onCreate(const Args &... args) {
+			return getInstance<Derived>();
+		}
+
 		// handle Cache insert and put insert mapping value in &value
-		inline bool onInsert(Address addr, Value &value) {
+		template<typename Value, typename... Args>
+		inline bool onInsert(Address addr, Value &value, const Args &... args) {
 			return true;
 		}
+		
 		// default Cache will not trigger hit event, it's used for handling partial load problem
-		inline bool onHit(Address addr, Value &value) {
+		template<typename Value, typename... Args>
+		inline bool onHit(Address addr, Value &value, const Args &... args) {
 			return true;
 		}
+		
 		// handle Cache erase and put mapping value in &value for cleaning/write_back ...
-		inline bool onErase(Address addr, Value &value) {
+		template<typename Value, typename... Args>
+		inline bool onErase(Address addr, Value &value, const Args &... args) {
 			return true;
 		}
 	};
+
+	namespace ns::cache {
+		template<typename Address, typename Value, typename Handler>
+		using check_handler_t = std::enable_if_t<std::is_base_of_v<BasicCacheHandler<Address, Value>, Handler>>;
+	}
 
 	// DESIGN:
 	// Cache is a key-value structure in my opinion, so the core feature is to access value freely without caring about the insert-erase staff
@@ -306,113 +339,131 @@ namespace db {
 	// replace closed represent closed status
 	// commonly used in tlb
 	// TODO: maybe consider flexible Cache memory in the future, shrink-expand
-	template<typename Address, typename Value, typename Handler, typename Core = MRUCacheCore<Address>>
-	struct Cache: Core {
-		using super = Core;
-		using address_type = Address;
-		using value_type = Value;
-		using handler_type = Handler;
-		using core_type = Core;
+	// rule: erase: erase core then erase data, insert/hit: data then core
+	template<typename Address, typename Value
+		, typename Handler = BasicCacheHandler<Address, Value>
+		, typename Core = MRUCacheCore<Address>
+		// , typename = ns::cache::check_handler_t<Address, Value, Handler>
+	> struct Cache: Core {
+		using Super = Core;
 		
 		Handler &_handler;
 		std::unordered_map<Address, Value> _values;
 		
 	public:
-		inline Cache(Handler &handler, size_t capacity = 0) : super(capacity), _handler(handler) {
+		inline Cache(Handler &handler, size_t capacity = 0) : Super(capacity), _handler(handler) {
 		}
 
-		inline Cache(const Cache &other) : super(other), _handler(other._handler), _values(other._values) {
+		inline Cache(const Cache &other) : Super(other), _handler(other._handler), _values(other._values) {
 		}
 
-		inline Cache(Cache &&other) : super(std::move(other)), _handler(other._handler), _values(std::move(other._values)) {
+		inline Cache(Cache &&other) : Super(std::move(other)), _handler(other._handler), _values(std::move(other._values)) {
 			super::close();
 		}
 
 		inline ~Cache() {
 			close();
 		}
-
+		
+		inline bool isOpen() {
+			return Super::isOpen();
+		}
+		
 		inline void open(size_t capacity) {
-			if (super::isOpen()) {
+			if (isOpen()) {
 				throw std::runtime_error("[Cache::open]");
 			}
-			super::open(capacity);
+			Super::open(capacity);
 		}
 
-		inline void close() {
-			if (!super::isOpen()) {
+		template<typename... Args>
+		inline void close(const Args &... args) {
+			if (!isOpen()) {
 				return;
 			}
-			super::close();
+			Super::close();
 			for (auto &v : _values) {
-				bool result = _handler.onErase(v.first, v.second);
-				if (!result) {
+				if (!_handler.onErase(v.first, v.second, args...)) {
 					throw std::runtime_error("[Cache::close]");
 				}
 			}
 			_values.clear();
 		}
 
-		inline bool hit(Address addr, Value &value) {
-			return super::hit(addr) && _handler.onHit(addr, value); // TODO: more feature
+		inline size_t capacity() { return Super::capacity(); }
+
+		inline size_t size() { return _values.size(); }
+
+		// hit-insert-erase: only manipulate derived data information
+		// return value should: 1. indicate function is success or not, 2. extra information used for higher level functions
+		// default return value is bool
+		template<typename... Args>
+		inline auto hit(Address addr, const Args &... args) {
+			auto iter = _values.find(addr);
+			if (iter == _values.end() || _handler.onHit(addr, iter->second, args...)) {
+				return iter;
+			} else {
+				return _values.end();
+			}
 		}
 
-		inline bool insert(Address addr, Value &value) {
-			auto flag = _handler.onInsert(addr, value);
-			if (flag) {
-				flag = _values.insert(std::make_pair(addr, value)).second;
+		template<typename... Args>
+		inline auto insert(Address addr, Value &value, const Args &... args) {
+			if (_handler.onInsert(addr, value, args...)) {
+				auto p = _values.try_emplace(addr, value);
+				if (p.second) {
+					return p.first;
+				}
 			}
-			return flag;
+			return _values.end();
 		}
 
 		// with no exception, private function, not in core
-		inline bool erase(Address addr) {
+		template<typename... Args>
+		inline bool erase(Address addr, const Args &... args) {
 			auto iter = _values.find(addr);
 			if (iter == _values.end()) {
 				return false;
 			}
-			bool flag = _handler.onErase(addr, iter->second);
+			bool flag = _handler.onErase(addr, iter->second, args...);
 			_values.erase(iter);
 			return flag;
 		}
 
-		inline Value fetch(Address addr, bool &flag) { // TODO: default argument list on fetch function design to init default value
-			flag = true;
-			auto iter = _values.find(addr);
+		// allow value with no default constructor to work
+		// value should not keep extra information, because it might be random initialized
+		template<typename... Args>
+		inline bool collect(Address addr, Value &value, const Args &... args) {
+			auto iter = hit(addr, args...);
 			if (iter != _values.end()) {
-				flag = hit(addr, iter->second);
-				if (flag) {
-					return iter->second;
+				if (Super::hit(addr)) {
+					value = iter->second;
+					return true;
 				} else {
-					return defaultValue<Value>(); // TODO: use arguement list to remove
+					// cannot access here: if structure hit but core should hit
+					throw std::runtime_error("[Cache::collect]");
 				}
 			}
-			auto res = super::replace(addr);
-			if (res != addr) {
-				flag = erase(res);
-				if (!flag) {
-					return defaultValue<Value>(); // TODO: use arguement list to remove
-				}
+			auto result = Super::replace(addr);
+			if (result != addr && !erase(result, args...)) {
+				return false;
 			}
-			Value tmp;
-			flag = insert(addr, tmp);
-			if (flag) {
-				flag = super::insert(addr); // add to replace when success
-			}
-			return tmp;
+			iter = insert(addr, value, args...);
+			return iter != _values.end() && Super::insert(addr);
 		}
 
-		inline Value fetch(Address addr) { // TODO: same problem
-			bool flag;
-			Value tmp = fetch(addr, flag);
-			if (!flag) {
-				throw std::runtime_error("[Cache::fetch]");
+		template<typename... Args>
+		inline Value fetch(Address addr, const Args &... args) {
+			Value v = _handler.onCreate<Value>(args...);
+			if (collect(addr, v, args...)) {
+				return v;
 			}
-			return tmp;
+			throw std::runtime_error("[Cache::fetch]");
 		}
 
-		inline bool discard(Address addr) { // force kick out
-			return super::erase(addr) && erase(addr);
+		template<typename... Args>
+		inline bool discard(Address addr, const Args &... args) { // force kick out
+			return Super::erase(addr) && erase(addr, args...);
 		}
 	};
 }

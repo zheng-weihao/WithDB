@@ -12,11 +12,22 @@
 
 // TODO: portable network order for other operation system using C interface precompiled command
 // TODO: find out why pragma comment works and why inline template funtion compiling will fail in some cases without this order
-#pragma comment(lib, "wsock32.lib")
+#define NOMINMAX // defined for windows.h to use min max in algorithm stl with windows sdk
 #include <winsock2.h>
+#pragma comment(lib, "wsock32.lib")
 
 namespace db {
 	namespace ns::endian {
+		// uint<Size> using for endian, might have other potential usage
+		template<std::size_t Size>
+		struct uint {};
+		template<> struct uint<1> { using type = std::uint8_t; };
+		template<> struct uint<2> { using type = std::uint16_t; };
+		template<> struct uint<4> { using type = std::uint32_t; };
+		template<> struct uint<8> { using type = std::uint64_t; };
+		template<std::size_t Size>
+		using uint_t = typename uint<Size>::type;
+
 		template<std::size_t Size>
 		inline uint_t<Size> encodeFixed(uint_t<Size> value) { return value; }
 		template<>

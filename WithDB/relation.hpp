@@ -1,27 +1,185 @@
 #pragma once
 
 #include "definitions.hpp"
-#include "endian.hpp"
-#include "page.hpp"
+#include "utils.hpp"
 
-#include <string>
+#include <algorithm>
+#include <exception>
+#include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
+#include <vector>
 
 namespace db {
-	using TupleContainer = NaiveContainer<0xffff>; // TODO: legacy temp structure
-	// continuous tuple for building and retrive on one page or copy the whole tuple to in without reference
-	using Tuple = typename TupleContainer::page_type; // TODO: Tuple should be a page<0xffff> with self arrange space(self hold container)
+	struct LargeObjectBase {
+		address _address;
+		address _size;
+	public:
+		// TOOD: derived class: blob, clob
+		virtual string toString() {
+			return "LargeObjectBase: address=" + db::toString(_address);
+		}
+	};
 
-	struct AttributeEntry {
-		std::string _name; // to save space in relation attribute table
-		attribute_enum _type;
-		page_address _size;
-		size_t _index;
+	// continuous tuple for building and retrive on one page or copy the whole tuple to in without reference
+	template<typename Relation>
+	struct BasicTuple : std::vector<element_t> {
+		using Super = std::vector<element_t>;
+
+		Relation &_relation;
+		bool _flag; // signal for builder started and tuple update/create mantain by higher layer objects
+		
+	public:
+		inline BasicTuple(Relation &relation, bool build = false) : _relation(relation), _flag(build) {
+		}
+
+		inline BasicTuple(const BasicTuple &other) : Super(other), _relation(other._relation), _flag(other._flag) {
+		}
+
+		inline BasicTuple(BasicTuple &&other) : Super(std::move(other)), _relation(other._relation), _flag(std::move(other._flag)) {
+		}
+
+		inline BasicTuple &operator=(const BasicTuple &other) {
+			// check if the relation reference is the same
+			if (&_relation != &other._relation) {
+				throw std::runtime_error("[BasicTuple::operator=]");
+			}
+			Super::operator=(other);
+			_flag = other._flag;
+			return *this;
+		}
+
+		inline BasicTuple &operator=(BasicTuple &&other) {
+			// check if the relation reference is the same
+			if (&_relation != &other._relation) {
+				throw std::runtime_error("[BasicTuple::operator=]");
+			}
+			Super::operator=(std::move(other));
+			_flag = std::move(other._flag);
+			return *this;
+		}
+
+		inline void clear() {
+			Super::clear();
+			_flag = false;
+		}
+		
+		template<typename Iterator>
+		inline BasicTuple &append(Iterator first, Iterator last) {
+			insert(end(), first, last);
+		}
+
+		template<typename Key, typename Value>
+		inline bool read(const Key &key, Value &value) {
+			return _relation.read(*this, key, value);
+		}
+
+		template<typename Value, typename Key, typename... Args> // for Value declare convenience
+		inline Value get(const Key &key, const Args&... args) {
+			return _relation.get<Value>(*this, key);
+		}
+
+		template<typename Key, typename Value>
+		inline bool write(const Key &key, const Value &value) {
+			return _relation.write(*this, key, value);
+		}
+	};
+
+	template<typename Relation>
+	struct BasicTupleBuilder {
+		using Tuple = BasicTuple<Relation>;
+
+		Relation &_relation;
+		Tuple _tuple;
+		std::vector<bool> _flags;
+
+	public:
+		inline BasicTupleBuilder(Relation &relation, bool start = false) : _relation(relation), _tuple(relation) {
+			if (!relation.isFormatted()) {
+				throw std::runtime_error("[BasicTupleBuilder::constructor]");
+			}
+			_flags.resize(relation.attributeSize());
+			if (start) {
+				this->start();
+			}
+		}
+
+		inline BasicTupleBuilder(const BasicTupleBuilder &other) : _relation(other._relation), _tuple(other._tuple), _flags(other._tuple) {
+		}
+
+		inline BasicTupleBuilder(BasicTupleBuilder &&other) : _relation(other._relation), _tuple(std::move(other._tuple)), _flags(std::move(other._tuple)) {
+		}
+
+		inline bool isStarted() {
+			return _tuple._flag;
+		}
+
+		inline BasicTupleBuilder &start() {
+			clear();
+			_tuple._flag = true;
+			_tuple.resize(_relation.fixedTupleSize());
+			return *this;
+		}
+
+		inline void clear() {
+			if (!isStarted()) {
+				return;
+			}
+			_tuple.clear();
+			std::fill(_flags.begin(), _flags.end(), false);
+		}
+
+		inline Tuple complete() {
+			if (!isStarted()) {
+				throw std::runtime_error("[BasicTupleBuilder::complete]");
+			}
+			// TODO: default value setting by relation defination
+			size_t i = 0;
+			for (auto f : _flags) {
+				if (!f) {
+					// attributeDefault return default value in string
+					build(i, _relation.attributeDefault(i));
+				}
+				++i;
+			}
+			Tuple tuple = std::move(_tuple);
+			clear();
+			return tuple;
+		}
+
+		template<typename Key, typename Value>
+		inline BasicTupleBuilder &build(const Key &key, const Value &value) {
+			_flags[_relation.attributePos(key)] = _tuple.write(key, value);
+			return *this;
+		}
+	};
+
+	namespace ns::relation {
+		template<typename Type>
+		using check_string = std::enable_if<std::is_same_v<string, Type>>;
+		template<typename Type>
+		using check_string_t = typename check_string<Type>::type;
+
+		template<typename Type>
+		using check_lob = std::enable_if<std::is_base_of_v<LargeObjectBase, Type>>;
+		template<typename Type>
+		using check_lob_t = typename check_lob<Type>::type;
+
+		template<typename Type>
+		using check_default_t = std::void_t<
+			check_not_t<check_lob<Type>>,
+			check_not_t<check_string<Type>>
+		>;
+	}
+
+	struct Attribute {
+		type_enum _type;
+		page_address _size; // used by CHAR & VARCHAR
 		page_address _offset;
 		size_t _vCount;
 
 	public:
-		inline AttributeEntry(const std::string &name, attribute_enum type, page_address size = 0, size_t index = 0, page_address offset = 0, size_t vCount = 0) : _name(name), _index(index), _type(type), _size(size), _offset(offset), _vCount(vCount) {
+		inline Attribute(type_enum type = DUMMY_T, page_address size = 0, page_address offset = 0, size_t vCount = 0) : _type(type), _size(size), _offset(offset), _vCount(vCount) {
 		}
 
 		inline page_address fixedSize() {
@@ -31,160 +189,244 @@ namespace db {
 			case db::VARCHAR_T:
 				return 2 * sizeof(page_address);
 			case db::INT_T:
-				return _size = sizeof(int_type);
+				return sizeof(int_t);
 			case db::LONG_T:
-				return _size = sizeof(long_type);
+				return sizeof(long_t);
 			case db::FLOAT_T:
-				return _size = sizeof(float_type);
+				return sizeof(float_t);
 			case db::DOUBLE_T:
-				return _size = sizeof(double_type);
+				return sizeof(double_t);
 			case db::DATE_T:
-				return _size = sizeof(element_type) * 8;
+				return _size = sizeof(element_t) * 8;
 			case db::BLOB_T:
 				return _size = sizeof(address);
 			default:
-				throw std::runtime_error("[AttributeEntry::fixedSize]");
+				throw std::runtime_error("[Attribute::fixedSize]");
 			}
 		}
 
 		inline page_address maxSize() {
 			if (_type == VARCHAR_T) {
-				return _size + 2 * sizeof(page_address);
+				return fixedSize() + _size;
 			} else {
-				return _size;
+				return fixedSize();
 			}
 		}
 
-		// BLOB => address
+		// function overload set for attribute reading
+		// TODO: add RTTI checking for _type in the future
+		// TODO: BLOB => address in tuple, save in a blob object in memory
 		// VARCHAR, CHAR, DATE => string
-		template<typename Type>
-		inline Type read(Tuple &tuple) {
-			if (_size != sizeof(Type)) {
-				// simple type size checking without reflection for efficiency
-				// TODO: add RTTI checking for _type in the future
-				throw std::runtime_error("[AttributeEntry::read]");
-			}
-			return tuple.read<Type>(_offset);
+		template<typename Tuple, typename Value
+			, ns::relation::check_default_t<Value> * = nullptr
+		> inline bool read(Tuple &tuple, Value &value) {
+			return BasicTypes::read(value, tuple.data() + _offset, _type);
 		}
 
-		template<>
-		inline std::string read<std::string>(Tuple &tuple) {
-			// TODO: checking condition for robustness
+		template<typename Tuple, typename Value
+			, ns::relation::check_string_t<Value> * = nullptr
+		> inline bool read(Tuple &tuple, Value &value) {
+			if (tuple.size() < _offset + fixedSize()) {
+				return false;
+			}
+			auto ptr = tuple.data();
 			switch (_type) {
 			case db::CHAR_T:
 			case db::DATE_T:
-				return tuple.read<std::string>(_offset, _offset + _size);
+				return BasicTypes::read(value, ptr + _offset, ptr + _offset + _size, _type);
 			case db::VARCHAR_T:
 			{
-				auto b = tuple.read<page_address>(_offset);
-				auto e = tuple.read<page_address>(_offset + sizeof(page_address));
-				if (e - b > _size) {
-					throw std::runtime_error("[AttributeEntry::read]");
+				auto b = BasicTypes::get<page_address>(ptr + _offset);
+				auto e = BasicTypes::get<page_address>(ptr + _offset + sizeof(page_address));
+				if (e < b || _size < e - b || tuple.size() < e 
+					|| !BasicTypes::read(value, ptr + b, ptr + e, _type)) {
+					return false;
 				}
-				return tuple.read<std::string>(b, e);
+				break;
 			}
+			case db::INT_T:
+				value = std::move(toString(get<int_t>(tuple))); break;
+			case db::LONG_T:
+				value = std::move(toString(get<long_t>(tuple))); break;
+			case db::FLOAT_T:
+				value = std::move(toString(get<float_t>(tuple))); break;
+			case db::DOUBLE_T:
+				value = std::move(toString(get<double_t>(tuple))); break;
 			default:
-				throw std::runtime_error("[AttributeEntry::read]");
+				return false;;
 			}
+			return true;
+		}
+
+		template<typename Tuple, typename Value
+			, ns::relation::check_lob_t<Value> * = nullptr
+		> inline bool read(Tuple &tuple, Value &value) {
+			if (_type < LOB_T || _type > CLOB_T || tuple.size() < _offset + sizeof(address)) {
+				return false;
+			}
+			return BasicTypes::read<address>(value._address, tuple.data() + _offset);
+		}
+
+		template<typename Value, typename Tuple, typename... Args> // for Value declare convenience
+		inline Value get(Tuple &tuple, const Args &... args) {
+			Value v = getInstance<Value>(args...);
+			if (read(tuple, v)) {
+				return v;
+			}
+			throw std::runtime_error("[Attribute::get]");
+		}
+
+		template<typename Tuple, typename Value
+			, ns::relation::check_default_t<Value> * = nullptr
+		> inline bool write(Tuple &tuple, const Value &value) {
+			return BasicTypes::write(value, tuple.data() + _offset, _type);
+		}
+
+		template<typename Tuple, typename Value
+			, ns::relation::check_string_t<Value> * = nullptr
+		> inline bool write(Tuple &tuple, const Value &value) {
+			if (tuple.size() < _offset + fixedSize()) {
+				return false;
+			}
+			auto ptr = tuple.data();
+			try {
+				switch (_type) {
+				case db::CHAR_T:
+				case db::DATE_T:
+					return BasicTypes::write(value, ptr + _offset, ptr + _offset + _size, _type);
+				case db::VARCHAR_T:
+				{
+					auto size = value.size();
+					if (_size < size) {
+						return false;
+					}
+					auto b = BasicTypes::get<page_address>(ptr + _offset);
+					auto e = BasicTypes::get<page_address>(ptr + _offset + sizeof(page_address));
+					if (e) {
+						if (e < b || _size < e - b || tuple.size() < e) {
+							return false;
+						}
+						tuple.erase(tuple.begin() + b, tuple.begin() + e);
+					}
+					b = static_cast<page_address>(tuple.size());
+					e = static_cast<page_address>(b + size);
+					tuple.resize(e);
+					ptr = tuple.data();
+					return BasicTypes::write(b, ptr + _offset)
+						&& BasicTypes::write(e, ptr + _offset + sizeof(page_address))
+						&& BasicTypes::write(value, ptr + b, ptr + e, _type);
+				}
+				case db::INT_T:
+					return write(tuple, std::stoi(value));
+				case db::LONG_T:
+					return write(tuple, std::stoll(value));
+				case db::FLOAT_T:
+					return write(tuple, std::stof(value));
+				case db::DOUBLE_T:
+					return write(tuple, std::stod(value));
+				default:
+					return false;;
+				}
+			} catch (...) {
+				return false;
+			}
+		}
+
+		template<typename Tuple, typename Value
+			, ns::relation::check_lob_t<Value> * = nullptr
+		> inline bool write(Tuple &tuple, const Value &value) {
+			if (_type < LOB_T || _type > CLOB_T || tuple.size() < _offset + sizeof(address)) {
+				return false;
+			}
+			return BasicTypes::write<address>(value._address, tuple.data() + _offset);
 		}
 	};
 
 	struct Relation {
-		std::string _name;
+		using TupleBuilder = BasicTupleBuilder<Relation>;
 
-		address _capacity = 0; // relation max size
-		address _begin = 0; // relation begin pointer
-		address _end = 0; // current end pointer
-		address _ptr = 0; // current search pointer for insert
+		address _capacity; // relation max size
+		address _begin; // relation begin pointer
+		address _end; // current end pointer
+		address _ptr; // current search pointer for insert
 
-		std::vector<AttributeEntry> _attributes; // _fixedSize, _maxSize
-		std::unordered_map<std::string, size_t> _map; // attribute name-index map // TODO: might remove
+		std::vector<Attribute> _attributes; // _fixedSize, _maxSize
+		std::unordered_map<string, size_t> _attributeNames; // attribute name-index map // TODO: might remove
+		bool _isFormatted;
 
 		address _fixedTupleSize = 0;
 		address _maxTupleSize = 0;
 
-		// TODO: IndexTable _indexes;
-
 		// statistic
-		size_t _tCount = 0;
-		size_t _bCount = 0; // TODO: change to _pCount
+		size_t _tCount = 0; // tuple count
+		size_t _pCount = 0; // page count
 
-		inline Relation(const std::string &name = "") : _name(name) {
+		std::vector<bool> _flags; // used as indexes on single attribute for regular relation, used as masks for temporary relation in project
+
+		string _stringDefault = "";
+		string _arithmeticDefault = "0";
+
+		inline Relation(address capacity, address begin = 0, bool load = false) :
+			_capacity(capacity), _begin(begin), _end(begin), _ptr(begin), _isFormatted(load) {
 		}
 
-		inline std::string &name() {
-			return _name;
-		}
-
-		template<typename... Args>
-		inline Relation &add(Args... args) {
-			if (isFormatted()) {
-				throw std::runtime_error("[Relation::add]");
-			}
-			_attributes.emplace_back(args...);
-			return *this;
+		inline Relation(bool load = false) : Relation(0, 0, load) {
 		}
 
 		inline bool isFormatted() {
-			return !_map.empty();
+			return _isFormatted;
 		}
 
-		inline bool format() {
-			if (isFormatted()) {
-				return true;
-			}
-			if (_attributes.empty()) {
-				return false;
+		inline Relation &format(bool load = false) {
+			if (isFormatted() != load) {
+				throw std::runtime_error("[Relation::format]");
 			}
 
-			if (_fixedTupleSize) { // as a symbol that relation is set from storage
-				std::sort(_attributes.begin(), _attributes.end(), [](const AttributeEntry &a, const AttributeEntry &b) {
-					return a._index < b._index;
-				});
-				size_t i = 0;
-				for (auto &entry : _attributes) {
-					if (entry._index != i || !_map.insert(std::make_pair(entry._name, i)).second) {
-						// index miss or duplicated attribute name
-						return false;
-					}
-					++i;
+			_flags.resize(_attributes.size());
+
+			if (load) {
+				return *this;
+			}
+
+			for (auto &attribute : _attributes) {
+				_fixedTupleSize += attribute.fixedSize();
+				_maxTupleSize += attribute.maxSize();
+				if (_maxTupleSize > TUPLE_CAPACITY) {
+					// size overflow
+					throw std::runtime_error("[Relation::format]");
 				}
-				return true;
 			}
 
 			std::vector<size_t> order(_attributes.size());
-			size_t i = 0;
-			for (auto &entry : _attributes) {
-				_fixedTupleSize += entry.fixedSize();
-				_maxTupleSize += entry.maxSize();
-				if (_maxTupleSize > TUPLE_CAPACITY) {
-					// size overflow
-					return false;
-				}
-				if (!_map.insert(std::make_pair(entry._name, i)).second) {
-					// duplicated attribute name
-					return false;
-				}
-				entry._index = i;
+			for (size_t i = 0; i != order.size(); ++i) {
 				order[i] = i;
-				++i;
 			}
-			std::sort(order.begin(), order.end(), [this](size_t a, size_t b) {
-				auto aEntry = _attributes[a];
-				auto bEntry = _attributes[b];
-				if ((aEntry._type == CHAR_T) ^ (bEntry._type == CHAR_T)) {
-					return bEntry._type == CHAR_T;
+			std::sort(order.begin(), order.end(), [this](size_t ai, size_t bi) {
+				auto a = _attributes[ai], &b = _attributes[bi];
+				if ((a._type == CHAR_T) ^ (b._type == CHAR_T)) {
+					return b._type == CHAR_T;
+				}
+				auto as = a.fixedSize(), bs = b.fixedSize();
+				if (as != bs) {
+					return bs < as;
 				} else {
-					return aEntry.fixedSize() > bEntry.fixedSize();
+					return ai < bi;
 				}
 			});
-			page_address b = 0;
+
+			page_address offset = 0;
 			for (auto &index : order) {
-				auto &entry = _attributes[index];
-				entry._offset = b;
-				b += entry.fixedSize();
+				auto &attribute = _attributes[index];
+				attribute._offset = offset;
+				offset += attribute.fixedSize();
+
+				// for attribute storage consistency
+				if (attribute._type != CHAR_T && attribute._type != VARCHAR_T) {
+					attribute._size = attribute.fixedSize();
+				}
 			}
-			return true;
+			_isFormatted = true;
+			return *this;
 		}
 
 		inline address fixedTupleSize() {
@@ -195,126 +437,386 @@ namespace db {
 			return _maxTupleSize;
 		}
 
-		template<typename Type>
-		inline Type read(Tuple &tuple, size_t index) {
-			return _attributes[index].read<Type>(tuple);
+		template<typename... Args>
+		inline Relation &addAttribute(const string &name, const Args &... args) {
+			if (isFormatted()) {
+				throw std::runtime_error("[Relation::addAttribute]");
+			}
+			if (_attributeNames.insert({ name, _attributes.size() }).second) {
+				_attributes.emplace_back(args...);
+			}
+			return *this;
 		}
 
-		template<typename Type>
-		inline Type read(Tuple &tuple, const std::string name) {
-			return read<Type>(tuple, _map[name]);
+		template<typename... Args>
+		inline Relation &loadAttribute(const string &name, size_t pos, const Args &... args) {
+			if (!isFormatted() 
+				|| (pos < _attributes.size() && _attributes[pos]._type != DUMMY_T) 
+				|| !_attributeNames.try_emplace(name, pos).second) {
+				throw std::runtime_error("[Relation::loadAttribute]");
+			}
+			if (pos >= _attributes.size()) {
+				_attributes.resize(pos + 1);
+			}
+			_attributes[pos] = Attribute(args...);
+			return *this;
 		}
 
-		struct TupleBuilder {
-			Relation &_relation;
-			std::unique_ptr<Tuple> _current;
-			std::vector<bool> _flags;
-		public:
-			inline TupleBuilder(Relation &relation) : _relation(relation), _flags(_relation._attributes.size(), false) {
+		inline size_t attributeSize() {
+			return _attributes.size();
+		}
+		
+		inline size_t attributePos(size_t pos) {
+			return std::min(pos, _attributes.size());
+		}
+
+		inline size_t attributePos(const string &name) {
+			auto iter = _attributeNames.find(name);
+			return iter == _attributeNames.end() ? _attributes.size() : iter->second;
+		}
+
+		template<typename Key>
+		inline Attribute &attribute(const Key &key) {
+			auto pos = attributePos(key);
+			if (pos < _attributes.size()) {
+				return _attributes[pos];
 			}
+			throw std::runtime_error("[Relation::attribute]");
+		}
 
-			inline bool isStarted() {
-				return _current.operator bool();
+		// return string const reference
+		template<typename Key>
+		inline const string &attributeDefault(const Key &key) {
+			// TODO: attributeDefault decide by attribute setting
+			switch (attribute(key)._type) {
+			case db::INT_T:
+			case db::LONG_T:
+			case db::FLOAT_T:
+			case db::DOUBLE_T:
+				return _arithmeticDefault;
+			default:
+				return _stringDefault;
 			}
+		}
 
-			inline TupleBuilder &start(TupleContainer &container, size_t offset = 0) {
-				if (container.size() < offset + _relation.maxTupleSize()) {
-					throw std::runtime_error("[TupleBuilder::start]");
-				}
-				clear();
-				_current = std::make_unique<Tuple>(container, offset, offset + _relation.fixedTupleSize());
-				return *this;
-			}
+		template<typename Tuple, typename Key, typename Value>
+		inline bool read(Tuple &tuple, const Key &key, Value &value) {
+			return attribute(key).read(tuple, value);
+		}
 
-			inline Tuple result() {
-				if (!isStarted()) {
-					throw std::runtime_error("[TupleBuilder]");
-				}
+		template<typename Value, typename Tuple, typename Key, typename... Args> // for Value declare convenience
+		inline Value get(Tuple &tuple, const Key &key, const Args&... args) {
+			return attribute(key).get<Value>(tuple, args...);
+		}
 
-				size_t i = 0;
-				for (auto f : _flags) {
-					if (!f) {
-						auto t = _relation._attributes[i]._type;
-						if (t == CHAR_T || t == VARCHAR_T || t == DATE_T) { // TODO: default value
-							build(std::string(), i);
-						} else {
-							build(0, i);
-						}
-					}
-					++i;
-				}
-				Tuple tuple = std::move(*_current);
-				clear();
-				return std::move(tuple);
-			}
+		template<typename Tuple, typename Key, typename Value>
+		inline bool write(Tuple &tuple, const Key &key, const Value &value) {
+			return attribute(key).write(tuple, value);
+		}
 
-			inline void clear() {
-				if (isStarted()) {
-					_current.reset();
-					std::fill(_flags.begin(), _flags.end(), false);
-				}
-			}
-
-			template<typename Type>
-			inline TupleBuilder &build(Type value, size_t index) {
-				auto &entry = _relation._attributes[index];
-				if (_flags[index] && entry._type != VARCHAR_T) { // TODO: current don't support
-					throw std::runtime_error("[TupleBuilder::build]");
-				}
-
-				write(*_current, entry, value);
-				_flags[index] = true;
-				return *this;
-			}
-
-			template<typename Type>
-			inline TupleBuilder &build(Type value, const std::string &name) {
-				return build(value, _map[name]);
-			}
-
-			// TODO: move place
-			template<typename Type>
-			inline static void write(Tuple &tuple, AttributeEntry &entry, Type value) {
-				if (entry._size != sizeof(Type)) {
-					// simple type size checking without reflection for efficiency
-					// TODO: maybe add RTTI checking in the future
-					throw std::runtime_error("[TupleBuilder::write]");
-				}
-				tuple.write(value, entry._offset);
-			}
-
-			inline static void write(Tuple &tuple, AttributeEntry &entry, const std::string &value) {
-				if (entry._size < value.size()) {
-					throw std::runtime_error("[TupleBuilder::write]");
-				}
-				switch (entry._type) {
-				case db::CHAR_T:
-				case db::DATE_T:
-					tuple.write(value, entry._offset, entry._offset + entry._size);
-					return;
-				case db::VARCHAR_T:
-				{
-					auto first = static_cast<page_address>(tuple.size());
-					auto last = static_cast<page_address>(tuple.size() + value.size());
-					tuple.write(first, entry._offset);
-					tuple.write(last, entry._offset + sizeof(page_address));
-					tuple.activate(tuple.begin(), tuple.end() + value.size());
-					tuple.write(value, first);
-					return;
-				}
-				default:
-					throw std::runtime_error("[TupleBuilder::write]");
-				}
-			}
-		};
-
-		inline TupleBuilder builder() {
-			if (!isFormatted()) {
-				throw std::runtime_error("[TupleBuilder::constructor]");
-			}
-			return TupleBuilder(*this);
+		inline TupleBuilder builder(bool start = false) {
+			return TupleBuilder(*this, start);
 		}
 	};
 
-	using TupleBuilder = Relation::TupleBuilder;
+	using TupleBuilder = typename Relation::TupleBuilder;
+
+	using Tuple = typename TupleBuilder::Tuple;
+
+	// assuming positions (relation and attribute) are in uint32 range
+	struct Schema {
+		constexpr static size_t META_CAPACITY = SEGMENT_SIZE / 4;
+		constexpr static size_t RELATION_META_POS = 0;
+		constexpr static size_t ATTRIBUTE_META_POS = 1;
+		constexpr static size_t INDEX_META_POS = 2;
+
+		constexpr static size_t getIndexKey(size_t rpos, size_t apos) {
+			return (rpos << 32) | apos;
+		}
+
+		std::vector<Relation *> _relations; // _fixedSize, _maxSize
+		std::unordered_map<string, size_t> _relationNames; // attribute name-index map // TODO: might remove
+		std::unordered_map<size_t, address> _indexes;
+
+		inline Schema() {
+			{
+				Relation meta(META_CAPACITY, (RELATION_META_POS + 1) * META_CAPACITY);
+				meta.addAttribute("Name", db::VARCHAR_T, 255)
+					.addAttribute("Position", db::INT_T)
+					.addAttribute("Capacity", db::LONG_T)
+					.addAttribute("Begin", db::LONG_T)
+					.addAttribute("End", db::LONG_T)
+					.addAttribute("Pointer", db::LONG_T)
+					.addAttribute("FixedTupleSize", db::INT_T)
+					.addAttribute("MaxTupleSize", db::INT_T)
+					.addAttribute("TupleCount", db::LONG_T)
+					.addAttribute("PageCount", db::LONG_T)
+					.format();
+				createRelation("RelationMeta", std::move(meta));
+			}
+			{
+				Relation meta(META_CAPACITY, (ATTRIBUTE_META_POS + 1) * META_CAPACITY);
+				meta.addAttribute("RelationPosition", db::INT_T)
+					.addAttribute("Name", db::VARCHAR_T, 255)
+					.addAttribute("Position", db::INT_T)
+					.addAttribute("Type", db::INT_T)
+					.addAttribute("Size", db::INT_T)
+					.addAttribute("Offset", db::INT_T)
+					.addAttribute("ValueCount", db::LONG_T)
+					.format();
+				createRelation("AttributeMeta", std::move(meta));
+			}
+			{
+				Relation meta(META_CAPACITY, (INDEX_META_POS + 1) * META_CAPACITY);
+				meta.addAttribute("RelationPosition", db::INT_T)
+					.addAttribute("AttributePosition", db::INT_T)
+					.addAttribute("Root", db::LONG_T)
+					.format();
+				createRelation("IndexMeta", std::move(meta));
+			}
+		}
+
+		inline ~Schema() {
+			for (auto &ptr : _relations) {
+				delete ptr;
+			}
+		}
+
+		inline size_t relationPos(size_t pos) {
+			if (pos < _relations.size() && _relations[pos]) {
+				return pos;
+			} else {
+				return _relations.size();
+			}
+		}
+
+		inline size_t relationPos(const string &name) {
+			auto iter = _relationNames.find(name);
+			return relationPos(iter == _relationNames.end() ? _relations.size() : iter->second);
+		}
+
+		template<typename Key>
+		inline Relation &relation(const Key &key) {
+			auto pos = relationPos(key);
+			if (pos != _relations.size()) {
+				return *_relations[pos];
+			}
+			throw std::runtime_error("[Relation::relation]");
+		}
+
+		inline bool loadRelation(Tuple &tuple) {
+			auto name = tuple.get<string>(0);
+			size_t pos = static_cast<std::uint32_t>(tuple.get<int_t>(1)); // TODO: turn unsign function
+			if ((pos < _relations.size() && _relations[pos]) || !_relationNames.try_emplace(name, pos).second) {
+				return false;
+			}
+			if (pos >= _relations.size()) {
+				_relations.resize(pos + 1);
+			}
+			_relations[pos] = new Relation(true);
+			auto &r = *_relations[pos];
+			r._capacity = tuple.get<long_t>(2);
+			r._begin = tuple.get<long_t>(3);
+			r._end = tuple.get<long_t>(4);
+			r._ptr = tuple.get<long_t>(5);
+			r._fixedTupleSize = static_cast<std::uint32_t>(tuple.get<int_t>(6));
+			r._maxTupleSize = static_cast<std::uint32_t>(tuple.get<int_t>(7));
+			r._tCount = tuple.get<long_t>(8);
+			r._pCount = tuple.get<long_t>(9);
+			return true;
+		}
+
+		inline Tuple dumpRelation(const string &name, size_t pos) {
+			if (pos == _relations.size()) {
+				throw std::runtime_error("[Schema::dumpRelation]");
+			}
+			auto &r = relation(pos);
+			return relation(RELATION_META_POS).builder(true)
+				.build(0, name)
+				.build(1, static_cast<int_t>(pos))
+				.build(2, static_cast<long_t>(r._capacity))
+				.build(3, static_cast<long_t>(r._begin))
+				.build(4, static_cast<long_t>(r._end))
+				.build(5, static_cast<long_t>(r._ptr))
+				.build(6, static_cast<int_t>(r._fixedTupleSize))
+				.build(7, static_cast<int_t>(r._maxTupleSize))
+				.build(8, static_cast<long_t>(r._tCount))
+				.build(9, static_cast<long_t>(r._pCount))
+				.complete();
+		}
+
+		inline Tuple dumpRelation(const string &name) {
+			return dumpRelation(name, relationPos(name));
+		}
+
+		inline bool loadAttribute(Tuple &tuple) {
+			size_t rpos = static_cast<std::uint32_t>(tuple.get<int_t>(0));
+			if (relationPos(rpos) == _relations.size()) {
+				return false;
+			}
+
+			auto &r = *_relations[rpos];
+			try {
+				r.loadAttribute(
+					tuple.get<string>(1),
+					static_cast<std::uint32_t>(tuple.get<int_t>(2)),
+					static_cast<type_enum>(tuple.get<int_t>(3)),
+					static_cast<page_address>(tuple.get<int_t>(4)),
+					static_cast<page_address>(tuple.get<int_t>(5)),
+					tuple.get<long_t>(6)
+				);
+			} catch (...) {
+				return false;
+			}
+			return true;
+		}
+
+		template<typename RelationKey>
+		inline Tuple dumpAttribute(const RelationKey &rkey, const string &name, size_t pos) {
+			auto rpos = relationPos(rkey);
+			if (rpos == _relations.size()) {
+				throw std::runtime_error("[Schema::dumpRelation]");
+			}
+			auto &r = relation(rpos);
+			if (pos == r._attributes.size()) {
+				throw std::runtime_error("[Schema::dumpRelation]");
+			}
+			auto &a = r.attribute(pos);
+			return relation(ATTRIBUTE_META_POS).builder(true)
+				.build(0, static_cast<int_t>(rpos))
+				.build(1, static_cast<string>(name))
+				.build(2, static_cast<int_t>(pos))
+				.build(3, static_cast<int_t>(a._type))
+				.build(4, static_cast<int_t>(a._size))
+				.build(5, static_cast<int_t>(a._offset))
+				.build(6, static_cast<long_t>(a._vCount))
+				.complete();
+		}
+
+		template<typename RelationKey>
+		inline Tuple dumpAttribute(const RelationKey &rkey, const string &name) {
+			auto rpos = relationPos(rkey);
+			if (rpos == _relations.size()) {
+				throw std::runtime_error("[Schema::dumpRelation]");
+			}
+			auto &r = relation(rpos);
+			return dumpAttribute(rpos, name, r.attributePos(name));
+		}
+
+		inline bool createRelation(const string &name, Relation &&relation) {
+			if (!relation.isFormatted() || _relationNames.find(name) != _relationNames.end()) {
+				return false;
+			}
+			size_t i = 0;
+			for (auto ptr : _relations) {
+				if (!ptr) {
+					break;
+				}
+				++i;
+			}
+			if (_relationNames.try_emplace(name, i).second) {
+				if (i == _relations.size()) {
+					_relations.emplace_back(new Relation(std::move(relation)));
+				} else {
+					_relations[i] = new Relation(std::move(relation));
+				}
+				return true;
+			} else {
+				return false;
+			}
+		}
+
+		inline bool dropRelation(const string &name) {
+			auto pos = relationPos(name);
+			if (pos < _relations.size() && _relations[pos]) {
+				delete _relations[pos];
+				_relations[pos] = nullptr;
+				_relationNames.erase(name);
+			} else {
+				return false;
+			}
+		}
+
+		inline bool loadIndex(Tuple &tuple) {
+			size_t rpos = static_cast<std::uint32_t>(tuple.get<int_t>(0));
+			if (relationPos(rpos) == _relations.size()) {
+				return false;
+			}
+			auto &r = *_relations[rpos];
+			size_t apos = static_cast<std::uint32_t>(tuple.get<int_t>(1));
+			if (r.attributePos(apos) == r._attributes.size()) {
+				return false;
+			}
+			address root = tuple.get<long_t>(2);
+			if (!_indexes.try_emplace(getIndexKey(rpos, apos), root).second) {
+				return false;
+			}
+			r._flags[apos] = true;
+			return true;
+		}
+
+		inline Tuple dumpIndex(size_t key) {
+			auto iter = _indexes.find(key);
+			if (iter != _indexes.end()) {
+				throw std::runtime_error("[Schema::dumpIndex]");
+			}
+			return relation(INDEX_META_POS).builder(true)
+				.build(0, static_cast<int_t>(getFlag(key, 32, 64)))
+				.build(1, static_cast<int_t>(getFlag(key, 0, 32)))
+				.build(2, static_cast<long_t>(iter->second))
+				.complete();
+		}
+
+		template<typename RelationKey, typename AttributeKey>
+		inline Tuple dumpIndex(const RelationKey &rkey, const AttributeKey &akey) {
+			size_t rpos = relationPos(rkey);
+			if (rpos == _relations.size()) {
+				throw std::runtime_error("[Schema::dumpIndex]");
+			}
+			auto &r = *_relations[rpos];
+			size_t apos = r.attributePos(akey);
+			if (apos == r._attributes.size() || !r._flags[apos]) {
+				throw std::runtime_error("[Schema::dumpIndex]");
+			}
+			return dumpIndex(getIndexKey(rpos, apos));
+		}
+
+		template<typename RelationKey, typename AttributeKey>
+		inline address index(const RelationKey &rkey, const AttributeKey &akey) { // check index status
+			size_t rpos = relationPos(rkey);
+			if (rpos == _relations.size()) {
+				throw std::runtime_error("[Schema::dumpIndex]");
+			}
+			auto &r = *_relations[rpos];
+			size_t apos = r.attributePos(akey);
+			if (apos == r._attributes.size() || !r._flags[apos]) {
+				throw std::runtime_error("[Schema::dumpIndex]");
+			}
+			auto key = getIndexKey(relationPos(rkey), attributePos(akey));
+			auto iter = _indexes.find(key);
+			if (iter != _indexes.end()) {
+				return iter->second;
+			} else {
+				return NULL_ADDRESS;
+			}
+		}
+
+		template<typename RelationKey, typename AttributeKey>
+		inline bool setIndex(const RelationKey &rkey, const AttributeKey &akey, address root = NULL_ADDRESS) { // root = NULL_ADDRESS => delete index
+			auto key = getIndexKey(relationPos(rkey), attributePos(akey));
+			auto iter = _indexes.find(key);
+			if ((iter == _indexes.end()) ^ (root != NULL_ADDRESS)) {
+				return false;
+			} else {
+				return NULL_ADDRESS;
+			}
+			if (root == NULL_ADDRESS) {
+				_indexes.erase(iter);
+			} else {
+				_indexes.try_emplace(key, root);
+			}
+			return true;
+		}
+	};
+
 }
