@@ -71,7 +71,7 @@ namespace db {
 		}
 
 		inline bool result() {
-			if (getFlag(_pos, 63)) {
+			if (!getFlag(_pos, 63)) {
 				return false;
 			}
 			_controller.printResult(_pos);

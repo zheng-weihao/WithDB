@@ -118,7 +118,7 @@ namespace db {
 	constexpr address INDEX_SEG_END = INDEX_SEG_BEGIN + INDEX_SEG_CAPACITY * SEGMENT_SIZE;
 
 	constexpr size_t TEMP_SEG_CAPACITY = MAX_SEG_CAPACITY - METADATA_SEG_CAPACITY - BLOB_SEG_CAPACITY - DATA_SEG_CAPACITY - INDEX_SEG_CAPACITY; // capacity left
-	constexpr address TEMP_SEG_BEGIN = 0;
+	constexpr address TEMP_SEG_BEGIN = INDEX_SEG_END;
 	constexpr address TEMP_SEG_END = DATABASE_CAPACITY;
 
 	constexpr size_t TRANSLATOR_LOOKASIDE_SIZE = 0; // lookaside closed TODO: use lookaside to 0x800 when partial load mapping pages;

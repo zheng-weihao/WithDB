@@ -28,7 +28,6 @@ namespace db {
 			auto tmp = table;
 			_controller.createRelation(std::move(table));
 			auto builder = _controller.relationGuard("foo")._relation.builder();
-			_controller.createRelation(std::move(table));
 			for (auto i = 0; i < 0x20; ++i) {
 				db::Tuple tmp = builder.start()
 					.build(0, i)

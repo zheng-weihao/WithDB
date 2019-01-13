@@ -272,6 +272,9 @@ namespace db {
 
 		inline void dump() {
 			for (auto &p : schema()._relationNames) {
+				if (p.second <= Schema::INDEX_META_POS) {
+					continue;
+				}
 				delete _dataGuards[p.second];
 			}
 			_dataGuards.clear();
