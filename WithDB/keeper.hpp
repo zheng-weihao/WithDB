@@ -421,7 +421,7 @@ namespace db {
 					}
 				}
 				if (!_translator.unlink(addr)) {
-					throw std::runtime_error("Keeper::loosenSync");
+					// throw std::runtime_error("Keeper::loosenSync"); // DEBUG
 				}
 			} catch (const std::runtime_error &e) {
 				std::cerr << e.what() << std::endl;

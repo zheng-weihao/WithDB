@@ -4,6 +4,7 @@
 #include "relation.hpp"
 #include "relation_guard.hpp"
 // #include "index_guard.hpp"
+#include "query.hpp"
 
 #include <functional>
 #include <iostream>
@@ -65,7 +66,7 @@ namespace db {
 					}
 				});
 				for (auto &p : _schema._relationNames) {
-					if (p.second <= Schema::INDEX_META_POS) {
+					if (p.second <= Schema::INDEX_META_POS) { // skip system relatons
 						continue;
 					}
 					auto tuple = std::move(_schema.dumpRelation(p.second));
@@ -86,7 +87,7 @@ namespace db {
 					}
 				});
 				for (auto &rp : _schema._relationNames) {
-					if (rp.second <= Schema::INDEX_META_POS) {
+					if (rp.second <= Schema::INDEX_META_POS) { // skip system relatons
 						continue;
 					}
 					for (auto &ap : _schema.relation(rp.second)._attributeNames) {
@@ -124,12 +125,12 @@ namespace db {
 			}
 		}
 
-		inline bool createRelation(Relation &&relation) {
+		inline bool createRelation(Relation &&relation, size_t pos) {
 			auto name = relation.name();
 			if (!relation.isFormatted()) {
 				return false;
 			}
-			if (!_schema.createRelation(std::move(relation))) {
+			if (!_schema.createRelation(std::move(relation), pos)) {
 				return false;
 			}
 			{
@@ -145,11 +146,45 @@ namespace db {
 			return true;
 		}
 
-		inline bool dropRelaton(const string &name) {
+		template<typename Key>
+		inline bool dropRelaton(const Key &key) {
 			// TODO: delete table in the storage
-			throw std::runtime_error("MetaGuard::dropRelaton::NotImplemented");
-			if (!_schema.dropRelation(name)) {
+			auto pos = _schema.relationPos(key);
+			if (pos == _schema._relations.size() || !_schema.dropRelation(pos)) {
 				return false;
+			}
+			{
+				std::vector<address> relationAddresses;
+				_relationMetaGuard.traverseTuple([this, &relationAddresses, pos](Tuple &tuple, address addr) {
+					if (tuple.get<int_t>(1) == pos) {
+						relationAddresses.push_back(addr);
+					}
+				});
+				for (auto addr : relationAddresses) {
+					_relationMetaGuard.free(addr);
+				}
+			}
+			{
+				std::vector<address> attributeAddresses;
+				_attributeMetaGuard.traverseTuple([this, &attributeAddresses, pos](Tuple &tuple, address addr) {
+					if (tuple.get<int_t>(0) == pos) {
+						attributeAddresses.push_back(addr);
+					}
+				});
+				for (auto addr : attributeAddresses) {
+					_attributeMetaGuard.free(addr);
+				}
+			}
+			{
+				std::vector<address> indexAddresses;
+				_indexMetaGuard.traverseTuple([this, &indexAddresses, pos](Tuple &tuple, address addr) {
+					if (tuple.get<int_t>(0) == pos) {
+						indexAddresses.push_back(addr);
+					}
+				});
+				for (auto addr : indexAddresses) {
+					_indexMetaGuard.free(addr);
+				}
 			}
 			return true;
 		}
@@ -167,7 +202,19 @@ namespace db {
 		template<typename RelationKey, typename AttributeKey>
 		inline bool dropIndex(const RelationKey &rkey, const AttributeKey & akey) {
 			throw std::runtime_error("MetaGuard::dropIndex::NotImplemented");
-			return _schema.setIndex(rkey, akey);
+			auto rpos = relationPos(rkey), apos = attributePos(akey);
+			if (_schema.setIndex(rpos, apos))
+			{
+				std::vector<address> indexAddresses;
+				_indexMetaGuard.traverseTuple([this, &indexAddresses, rpos, apos](Tuple &tuple, address addr) {
+					if (tuple.get<int_t>(0) == rpos && tuple.get<int_t>(1) == apos) {
+						indexAddresses.push_back(addr);
+					}
+				});
+				for (auto addr : indexAddresses) {
+					_indexMetaGuard.free(addr);
+				}
+			}
 		}
 	};
 
@@ -178,89 +225,207 @@ namespace db {
 		Keeper _keeper;
 		MetaGuard _metaGuard;
 
-		std::unordered_map<string, RelationGuard *> _relationGuards;
-		//std::unordered_map<std::string, IndexGuard<int> *> _intIndexes;
-		//std::unordered_map<std::string, IndexGuard<std::string> *> _stringIndexes;
+		std::vector<RelationGuard *> _dataGuards;
+		std::vector<RelationGuard *> _tempGuards;
 
-		Controller(const string &path, bool truncate = false): _keeper(path, truncate), _metaGuard(_keeper) {
-			_metaGuard.load();
-			for (auto & p: _metaGuard._schema._relationNames) {
-				if (p.second > Schema::INDEX_META_POS) {
-					auto res = _relationGuards.try_emplace(p.first, new RelationGuard(_keeper, _metaGuard._schema.relation(p.second)));
-					if (!res.second) {
-						throw std::runtime_error("[Controller::constructor]");
-					}
-				}
-			}
-			/*for (auto &p : _metaGuard._indexes) {
-				auto ptr = p.second;
-				auto type = _relations[p.first.first]->_relation._attributes[p.first.second]._type;
-				if (type == INT_T) {
-					_intIndexes[p.first.first + toString(p.first.second)] = new IndexGuard<int>(&_keeper, p.second);
-				} else {
-					_stringIndexes[p.first.first + toString(p.first.second)] = new IndexGuard<std::string>(&_keeper, p.second);
-				}
-			}*/
+		inline Controller(const string &path, bool truncate = false): _keeper(path, truncate), _metaGuard(_keeper) {
+			load();
 		}
 
-		~Controller() {
-			/*for (auto &p : _intIndexes) {
-				delete p.second;
+		inline ~Controller() {
+			dump();
+		}
+
+		inline Schema &schema() { return _metaGuard._schema; }
+
+		template<typename Key>
+		inline Relation &relation(const Key &key) { return schema().relation(key); }
+
+		template<typename Key>
+		inline RelationGuard &relationGuard(const Key &key) {
+			auto &s = schema();
+			auto pos = s.relationPos(key);
+			if (pos == s._relations.size()) {
+				throw std::runtime_error("[Controller::relationGuard]");
 			}
-			_intIndexes.clear();
-			for (auto &p : _stringIndexes) {
-				delete p.second;
+			return *_dataGuards[pos];
+		}
+
+		inline void load() {
+			_metaGuard.load();
+			_dataGuards.resize(schema()._relations.size());
+			for (auto &p : schema()._relationNames) {
+				RelationGuard *ptr = nullptr;
+				switch (p.second) {
+				case Schema::RELATION_META_POS:
+					ptr = &_metaGuard._relationMetaGuard; break;
+				case Schema::ATTRIBUTE_META_POS:
+					ptr = &_metaGuard._attributeMetaGuard; break;
+				case Schema::INDEX_META_POS:
+					ptr = &_metaGuard._indexMetaGuard; break;
+				default:
+					ptr = new RelationGuard(_keeper, relation(p.second)); break;
+				}
+				_dataGuards[p.second] = ptr;
 			}
-			_stringIndexes.clear();*/
-			for (auto &p : _relationGuards) {
-				delete p.second;
+		}
+
+		inline void dump() {
+			for (auto &p : schema()._relationNames) {
+				delete _dataGuards[p.second];
 			}
-			_relationGuards.clear();
+			_dataGuards.clear();
+			for (size_t i = 0; i != _tempGuards.size(); ++i) {
+				if (_tempGuards[i]) {
+					dropTemp(i);
+				}
+			}
+			for (auto &ptr : _tempGuards) {
+				if (ptr) {
+					ptr->clear();
+					delete ptr;
+				}
+			}
+			_tempGuards.clear();
 			_metaGuard.dump();
 		}
 
-		bool createRelation(Relation &&relation) {
-			for (auto i = DATA_SEG_BEGIN; i != DATA_SEG_END; i += SEGMENT_SIZE) {
-				auto &param = _keeper.param(i);
-				if (param < 8) {
-					relation._capacity = DATA_CAPACITY;
-					relation._ptr = relation._begin = relation._end = i + param * DATA_CAPACITY;
-					++param;
-					auto name = relation.name();
-					if (_metaGuard.createRelation(std::move(relation))) {
-						auto res = _relationGuards.try_emplace(name, new RelationGuard(_keeper, _metaGuard._schema.relation(name)));
-						if (res.second) {
-							return true;
-						}
-					}
-					return false;
+		inline size_t createRelation(Relation &&relation) {
+			size_t i = Schema::INDEX_META_POS + 1;
+			for (; i < _dataGuards.size(); ++i) {
+				if (_dataGuards[i] == nullptr) {
+					break;
 				}
 			}
-			return false;
-		}
-
-		RelationGuard &relationGuard(const string &name) {
-			if (name == "RelationMeta") {
-				return _metaGuard._relationMetaGuard;
-			} else if (name == "AttributeMeta") {
-				return _metaGuard._attributeMetaGuard;
-			} else if (name == "IndexMeta") {
-				return _metaGuard._indexMetaGuard;
+			if (i == _dataGuards.size()) {
+				if (i == Schema::INDEX_META_POS + 1 + DATA_SEG_CAPACITY * (SEGMENT_SIZE / DATA_CAPACITY)) {
+					return 0;
+				} else {
+					_dataGuards.resize(i + 1);
+				}
+			}
+			relation._capacity = DATA_CAPACITY;
+			relation._ptr = relation._begin = relation._end = DATA_SEG_BEGIN +  (i - Schema::INDEX_META_POS - 1) * DATA_CAPACITY;
+			auto name = relation.name();
+			if (_metaGuard.createRelation(std::move(relation), i)) {
+				_dataGuards[i] = new RelationGuard(_keeper, schema().relation(name));
+				return i;
 			} else {
-				return *_relationGuards[name];
+				return 0;
 			}
 		}
 
-		void printAll(const string &name) { // DEBUG
-			auto &rg = relationGuard(name);
-			auto &r = rg._relation;
-			std::vector<std::pair<string, size_t>> v(r._attributeNames.begin(), r._attributeNames.end());
-			std::sort(v.begin(), v.end(), [](const std::pair<string, size_t> &a, const std::pair<string, size_t> &b) {
-				return a.second < b.second;
+		template<typename Key>
+		inline bool dropRelation(const Key &key) {
+			auto pos = schema().relationPos(key);
+			if (pos <= Schema::INDEX_META_POS || pos == schema()._relations.size()) {
+				return false;
+			}
+			relationGuard(pos).clear();
+			_metaGuard.dropRelaton(pos);
+		}
+
+		inline size_t createTemp(const Relation &relation) {
+			size_t i;
+			for (i = 0; i < _tempGuards.size(); ++i) {
+				if (_tempGuards[i] == nullptr) {
+					break;
+				}
+			}
+			if (i == _tempGuards.size()) {
+				if (i == TEMP_SEG_CAPACITY * (SEGMENT_SIZE / TEMP_CAPACITY)) {
+					return false;
+				} else {
+					_tempGuards.resize(i + 1);
+				}
+			}
+			auto ptr = new Relation(relation);
+			{
+				auto &relation = *ptr;
+				relation._capacity = TEMP_CAPACITY;
+				relation._ptr = relation._begin = relation._end = TEMP_SEG_BEGIN + i * TEMP_CAPACITY;
+			}
+			_tempGuards[i] = new RelationGuard(_keeper, *ptr);
+			return static_cast<size_t>(- 1 - i);
+		}
+
+		inline bool dropTemp(size_t i) {
+			i = static_cast<size_t>(- 1 - i);
+			if (!_tempGuards[i]) {
+				return false;
+			}
+			_tempGuards[i]->clear();
+			delete &(_tempGuards[i]->_relation);
+			delete _tempGuards[i];
+			_tempGuards[i] = nullptr;
+			return true;
+		}
+
+		inline RelationGuard &getGuard(size_t pos) {
+			if (getFlag(pos, 63)) {
+				return *(_tempGuards[static_cast<size_t>(- 1 - pos)]);
+			} else {
+				return relationGuard(pos);
+			}
+		}
+
+		inline size_t query(UnaryQueryStep &step) {
+			auto &single = getGuard(step._single);
+			auto ret = createTemp(step._result);
+			auto &dest = getGuard(ret);
+			single.traverseTuple([&](Tuple &tuple, address addr) {
+				if (step._selection(tuple)) {
+					TupleBuilder builder = dest._relation.builder(true);
+					size_t i = 0;
+					for (auto j : step._projection) {
+						if (!getFlag(j, 63)) {
+							builder.build(j, tuple.get<string>(i));
+						}
+						++i;
+					}
+					auto tuple = std::move(builder.complete());
+					dest.allocate(tuple);
+				}
 			});
+			return ret;
+		}
+
+		inline size_t query(BinaryQueryStep &step) {
+			auto &left = getGuard(step._left);
+			auto &right = getGuard(step._right);
+			auto ret = createTemp(step._result);
+			auto &dest = getGuard(ret);
+			left.traverseTuple([&](Tuple &tuple1, address addr1) {
+				right.traverseTuple([&](Tuple &tuple2, address addr2) {
+					if (!step._join(tuple1, tuple2)) {
+						return;
+					}
+					TupleBuilder builder = dest._relation.builder(true);
+					int i = 0;
+					for (i = 0; i < left._relation._attributes.size(); ++i) {
+						if (!getFlag(step._projection[i], 63)) {
+							builder.build(step._projection[i], tuple1.get<string>(i));
+						}
+					}
+					for (int j = 0; j < right._relation._attributes.size(); ++j, ++i) {
+						if (!getFlag(step._projection[i], 63)) {
+							builder.build(step._projection[i], tuple2.get<string>(j));
+						}
+					}
+					auto tmp = std::move(builder.complete());
+					dest.allocate(tmp);
+				});
+			});
+			return ret;
+		}
+
+		template<typename Key>
+		inline void printAll(const Key &key) { // DEBUG
+			auto &rg = relationGuard(key);
+			auto &r = rg._relation;
 			std::cout << "|";
-			for (auto &p : v) {
-				std::cout << p.first << "|";
+			for (auto &a : r._attributes) {
+				std::cout << a._name << "|";
 			}
 			std::cout << std::endl;
 			rg.traverseTuple([](Tuple &tuple, address addr) {
@@ -273,14 +438,42 @@ namespace db {
 			});
 		}
 
+		inline void printResult(size_t pos) {
+			auto &g = getGuard(pos);
+			auto &r = g._relation;
+			std::cout << "|";
+			for (auto &a : r._attributes) {
+				std::cout << a._name << "|";
+			}
+			std::cout << std::endl;
+			g.traverseTuple([](Tuple &tuple, address addr) {
+				auto size = tuple._relation._attributes.size();
+				std::cout << "|";
+				for (auto i = 0; i < size; ++i) {
+					std::cout << tuple.get<string>(i) << "|";
+				}
+				std::cout << std::endl;
+			});
+		}
+
 		template<typename Key>
-		inline Tuple fetchTuple(const Key & key, address addr) {
+		inline address createTuple(const Key & key, Tuple &tuple) {
+			return relationGuard(key).allocate(tuple);
+		}
+
+		template<typename Key>
+		inline address updateTuple(const Key &key, address addr, Tuple &tuple) {
+			return relationGuard(key).rellocate(addr, tuple);
+		}
+
+		template<typename Key>
+		inline Tuple retrieveTuple(const Key & key, address addr) {
 			return relationGuard(key).fetch(addr);
 		}
 
 		template<typename Key>
-		inline address insertTuple(const Key & key, Tuple &tuple) {
-			return relationGuard(key).allocate(tuple);
+		inline void deleteTuple(const Key &key, address addr) {
+			relationGuard(key).free(addr);
 		}
 
 		/*void unionOp();

@@ -371,11 +371,11 @@ namespace db {
 		string _stringDefault = "";
 		string _arithmeticDefault = "0";
 
-		inline Relation(const string &name, address capacity, address begin = 0, bool load = false)
+		inline Relation(const string &name, address capacity = 0, address begin = 0, bool load = false)
 			: _name(name), _capacity(capacity), _begin(begin), _end(begin), _ptr(begin), _isFormatted(load) {
 		}
 
-		inline Relation(bool load = false) : Relation("", 0, 0, load) {
+		inline explicit Relation(bool load = false) : Relation("", 0, 0, load) {
 		}
 
 		inline string &name() { return _name; }
@@ -582,7 +582,7 @@ namespace db {
 					.addAttribute("TupleCount", db::LONG_T)
 					.addAttribute("PageCount", db::LONG_T)
 					.format();
-				createRelation(std::move(meta));
+				createRelation(std::move(meta), RELATION_META_POS);
 			}
 			{
 				Relation meta("AttributeMeta", META_CAPACITY, (ATTRIBUTE_META_POS + 1) * META_CAPACITY);
@@ -594,7 +594,7 @@ namespace db {
 					.addAttribute("Offset", db::INT_T)
 					.addAttribute("ValueCount", db::LONG_T)
 					.format();
-				createRelation(std::move(meta));
+				createRelation(std::move(meta), ATTRIBUTE_META_POS);
 			}
 			{
 				Relation meta("IndexMeta", META_CAPACITY, (INDEX_META_POS + 1) * META_CAPACITY);
@@ -602,7 +602,7 @@ namespace db {
 					.addAttribute("AttributePosition", db::INT_T)
 					.addAttribute("Root", db::LONG_T)
 					.format();
-				createRelation(std::move(meta));
+				createRelation(std::move(meta), INDEX_META_POS);
 			}
 		}
 
@@ -736,22 +736,16 @@ namespace db {
 				.complete();
 		}
 
-		inline bool createRelation(Relation &&relation) {
-			if (!relation.isFormatted() || _relationNames.find(relation.name()) != _relationNames.end()) {
+		inline size_t createRelation(Relation &&relation, size_t pos) {
+			if (!relation.isFormatted() || _relationNames.find(relation.name()) != _relationNames.end() || (pos < _relations.size() && _relations[pos])) {
 				return false;
 			}
-			size_t i = 0;
-			for (auto ptr : _relations) {
-				if (!ptr) {
-					break;
-				}
-				++i;
-			}
-			if (_relationNames.try_emplace(relation.name(), i).second) {
-				if (i == _relations.size()) {
+			if (_relationNames.try_emplace(relation.name(), pos).second) {
+				if (pos >= _relations.size()) {
+					_relations.resize(pos);
 					_relations.emplace_back(new Relation(std::move(relation)));
 				} else {
-					_relations[i] = new Relation(std::move(relation));
+					_relations[pos] = new Relation(std::move(relation));
 				}
 				return true;
 			} else {
@@ -759,12 +753,13 @@ namespace db {
 			}
 		}
 
-		inline bool dropRelation(const string &name) {
-			auto pos = relationPos(name);
+		template<typename Key>
+		inline bool dropRelation(const Key &key) {
+			auto pos = relationPos(key);
 			if (pos < _relations.size() && _relations[pos]) {
+				_relationNames.erase(relation(pos).name());
 				delete _relations[pos];
 				_relations[pos] = nullptr;
-				_relationNames.erase(name);
 			} else {
 				return false;
 			}

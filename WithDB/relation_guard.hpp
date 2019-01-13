@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <type_traits>
 #include <utility>
@@ -417,8 +418,7 @@ namespace db {
 			return allocate(tuple);
 		}
 
-		template<typename Function>
-		inline void traversePage(Function fn) {
+		inline void traversePage(const std::function<void(TuplePage &, address)> &fn) {
 			for (auto ptr = _relation._begin; ptr != _relation._end; ptr += PAGE_SIZE) {
 				auto p = _keeper.hold<TuplePage>(ptr, false, false, false);
 				if (!p->load()) {
@@ -428,10 +428,9 @@ namespace db {
 			}
 		}
 
-		template<typename Function>
-		inline void traverseTuple(Function fn) {
+		inline void traverseTuple(const std::function<void(Tuple &, address)> &fn) {
 			Tuple tuple(_relation);
-			traversePage([&tuple, fn](TuplePage &page, address addr) {
+			traversePage([&tuple, &fn](TuplePage &page, address addr) {
 				size_t i = 0;
 				for (auto &entry : page._entries) {
 					if (entry.isDeleted()) {
@@ -444,6 +443,18 @@ namespace db {
 					++i;
 				}
 			});
+		}
+
+		inline void clear() {
+			for (auto ptr = _relation._begin; ptr != _relation._end; ptr += PAGE_SIZE) {
+				auto p = _keeper.hold<TuplePage>(ptr, false, false, false);
+				if (!p->load()) {
+					continue;
+				}
+				p.unpin();
+				_keeper.loosen(ptr);
+			}
+			_relation._ptr = _relation._end = _relation._begin;
 		}
 	};
 }
