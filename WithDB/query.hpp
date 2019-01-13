@@ -76,6 +76,46 @@ namespace db {
 	struct Query {
 		std::vector<element_t> _storage;
 		std::vector<VariableEntry> _variables;
-		std::vector<ExprBase *> _Exprs;
+		std::vector<ExprBase *> _exprs;
+		size_t _root;
+	};
+
+	struct QueryStep {
+		size_t _result;
+	};
+
+	struct UnaryQueryStep {
+		size_t _single;
+		std::function<bool(Tuple &)> _selection;
+		std::vector<size_t> _projection;
+	};
+
+	struct BinaryQueryStep {
+		size_t _left, _right;
+		std::function<bool(Tuple &)> _leftSelection;
+		std::function<bool(Tuple &)> _rightSelection;
+		std::function<bool(Tuple &, Tuple &)> _join;
+		std::vector<size_t> _leftProjection;
+		std::vector<size_t> _rightProjection;
+	};
+
+	struct QueryPlan : std::vector<QueryStep *> {
+		inline ~QueryPlan() {
+			for (auto iter = begin(); iter != end(); ++iter) {
+				delete *iter;
+			}
+		}
+	};
+
+	// TODO: query nesting
+	struct QueryOptimizer {
+		Schema &_schema;
+
+		inline QueryOptimizer(Schema &schema) : _schema(_schema) {
+		}
+
+		inline QueryPlan generate(Query &query) {
+			auto root = query._root;
+		}
 	};
 }
