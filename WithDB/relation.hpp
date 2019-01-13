@@ -173,14 +173,18 @@ namespace db {
 	}
 
 	struct Attribute {
+		string _name;
 		type_enum _type;
 		page_address _size; // used by CHAR & VARCHAR
 		page_address _offset;
 		size_t _vCount;
 
 	public:
-		inline Attribute(type_enum type = DUMMY_T, page_address size = 0, page_address offset = 0, size_t vCount = 0) : _type(type), _size(size), _offset(offset), _vCount(vCount) {
+		inline Attribute(const string &name = "", type_enum type = DUMMY_T, page_address size = 0, page_address offset = 0, size_t vCount = 0)
+			: _name(name), _type(type), _size(size), _offset(offset), _vCount(vCount) {
 		}
+
+		inline string &name() { return _name; }
 
 		inline page_address fixedSize() {
 			switch (_type) {
@@ -345,6 +349,7 @@ namespace db {
 	struct Relation {
 		using TupleBuilder = BasicTupleBuilder<Relation>;
 
+		string _name;
 		address _capacity; // relation max size
 		address _begin; // relation begin pointer
 		address _end; // current end pointer
@@ -366,12 +371,14 @@ namespace db {
 		string _stringDefault = "";
 		string _arithmeticDefault = "0";
 
-		inline Relation(address capacity, address begin = 0, bool load = false) :
-			_capacity(capacity), _begin(begin), _end(begin), _ptr(begin), _isFormatted(load) {
+		inline Relation(const string &name, address capacity, address begin = 0, bool load = false)
+			: _name(name), _capacity(capacity), _begin(begin), _end(begin), _ptr(begin), _isFormatted(load) {
 		}
 
-		inline Relation(bool load = false) : Relation(0, 0, load) {
+		inline Relation(bool load = false) : Relation("", 0, 0, load) {
 		}
+
+		inline string &name() { return _name; }
 
 		inline bool isFormatted() {
 			return _isFormatted;
@@ -438,27 +445,30 @@ namespace db {
 		}
 
 		template<typename... Args>
-		inline Relation &addAttribute(const string &name, const Args &... args) {
+		inline Relation &addAttribute(const Args &... args) {
 			if (isFormatted()) {
 				throw std::runtime_error("[Relation::addAttribute]");
 			}
+			Attribute a(args...);
+			auto &name = a.name();
 			if (_attributeNames.insert({ name, _attributes.size() }).second) {
-				_attributes.emplace_back(args...);
+				_attributes.push_back(std::move(a));
 			}
 			return *this;
 		}
 
 		template<typename... Args>
-		inline Relation &loadAttribute(const string &name, size_t pos, const Args &... args) {
+		inline Relation &loadAttribute(size_t pos, const Args &... args) {
+			Attribute a(args...);
 			if (!isFormatted() 
 				|| (pos < _attributes.size() && _attributes[pos]._type != DUMMY_T) 
-				|| !_attributeNames.try_emplace(name, pos).second) {
+				|| !_attributeNames.try_emplace(a.name(), pos).second) {
 				throw std::runtime_error("[Relation::loadAttribute]");
 			}
 			if (pos >= _attributes.size()) {
 				_attributes.resize(pos + 1);
 			}
-			_attributes[pos] = Attribute(args...);
+			_attributes[pos] = std::move(a);
 			return *this;
 		}
 
@@ -473,6 +483,19 @@ namespace db {
 		inline size_t attributePos(const string &name) {
 			auto iter = _attributeNames.find(name);
 			return iter == _attributeNames.end() ? _attributes.size() : iter->second;
+		}
+
+		inline const string &attributeName(size_t pos) {
+			if (pos < _attributes.size()) {
+				return _attributes[pos].name();
+			} else {
+				return _stringDefault;
+			}
+		}
+
+		inline const string &attributeName(const string &name) {
+			auto iter = _attributeNames.find(name);
+			return iter == _attributeNames.end() ? _stringDefault : iter->first;
 		}
 
 		template<typename Key>
@@ -547,7 +570,7 @@ namespace db {
 
 		inline Schema() {
 			{
-				Relation meta(META_CAPACITY, (RELATION_META_POS + 1) * META_CAPACITY);
+				Relation meta("RelationMeta", META_CAPACITY, (RELATION_META_POS + 1) * META_CAPACITY);
 				meta.addAttribute("Name", db::VARCHAR_T, 255)
 					.addAttribute("Position", db::INT_T)
 					.addAttribute("Capacity", db::LONG_T)
@@ -559,10 +582,10 @@ namespace db {
 					.addAttribute("TupleCount", db::LONG_T)
 					.addAttribute("PageCount", db::LONG_T)
 					.format();
-				createRelation("RelationMeta", std::move(meta));
+				createRelation(std::move(meta));
 			}
 			{
-				Relation meta(META_CAPACITY, (ATTRIBUTE_META_POS + 1) * META_CAPACITY);
+				Relation meta("AttributeMeta", META_CAPACITY, (ATTRIBUTE_META_POS + 1) * META_CAPACITY);
 				meta.addAttribute("RelationPosition", db::INT_T)
 					.addAttribute("Name", db::VARCHAR_T, 255)
 					.addAttribute("Position", db::INT_T)
@@ -571,15 +594,15 @@ namespace db {
 					.addAttribute("Offset", db::INT_T)
 					.addAttribute("ValueCount", db::LONG_T)
 					.format();
-				createRelation("AttributeMeta", std::move(meta));
+				createRelation(std::move(meta));
 			}
 			{
-				Relation meta(META_CAPACITY, (INDEX_META_POS + 1) * META_CAPACITY);
+				Relation meta("IndexMeta", META_CAPACITY, (INDEX_META_POS + 1) * META_CAPACITY);
 				meta.addAttribute("RelationPosition", db::INT_T)
 					.addAttribute("AttributePosition", db::INT_T)
 					.addAttribute("Root", db::LONG_T)
 					.format();
-				createRelation("IndexMeta", std::move(meta));
+				createRelation(std::move(meta));
 			}
 		}
 
@@ -602,6 +625,19 @@ namespace db {
 			return relationPos(iter == _relationNames.end() ? _relations.size() : iter->second);
 		}
 
+		inline const string &relationName(size_t pos) {
+			if (pos < _relations.size() && _relations[pos]) {
+				return _relations[pos]->name();
+			} else {
+				return _relations[RELATION_META_POS]->_stringDefault;
+			}
+		}
+
+		inline  const string &relationName(const string &name) {
+			auto iter = _relationNames.find(name);
+			return iter == _relationNames.end() ? _relations[RELATION_META_POS]->_stringDefault : iter->first;
+		}
+
 		template<typename Key>
 		inline Relation &relation(const Key &key) {
 			auto pos = relationPos(key);
@@ -622,6 +658,7 @@ namespace db {
 			}
 			_relations[pos] = new Relation(true);
 			auto &r = *_relations[pos];
+			r._name = name;
 			r._capacity = tuple.get<long_t>(2);
 			r._begin = tuple.get<long_t>(3);
 			r._end = tuple.get<long_t>(4);
@@ -633,13 +670,15 @@ namespace db {
 			return true;
 		}
 
-		inline Tuple dumpRelation(const string &name, size_t pos) {
+		template<typename Key>
+		inline Tuple dumpRelation(const Key &key) {
+			auto pos = relationPos(key);
 			if (pos == _relations.size()) {
 				throw std::runtime_error("[Schema::dumpRelation]");
 			}
 			auto &r = relation(pos);
 			return relation(RELATION_META_POS).builder(true)
-				.build(0, name)
+				.build(0, r.name())
 				.build(1, static_cast<int_t>(pos))
 				.build(2, static_cast<long_t>(r._capacity))
 				.build(3, static_cast<long_t>(r._begin))
@@ -652,10 +691,6 @@ namespace db {
 				.complete();
 		}
 
-		inline Tuple dumpRelation(const string &name) {
-			return dumpRelation(name, relationPos(name));
-		}
-
 		inline bool loadAttribute(Tuple &tuple) {
 			size_t rpos = static_cast<std::uint32_t>(tuple.get<int_t>(0));
 			if (relationPos(rpos) == _relations.size()) {
@@ -665,8 +700,8 @@ namespace db {
 			auto &r = *_relations[rpos];
 			try {
 				r.loadAttribute(
-					tuple.get<string>(1),
 					static_cast<std::uint32_t>(tuple.get<int_t>(2)),
+					tuple.get<string>(1),
 					static_cast<type_enum>(tuple.get<int_t>(3)),
 					static_cast<page_address>(tuple.get<int_t>(4)),
 					static_cast<page_address>(tuple.get<int_t>(5)),
@@ -678,21 +713,22 @@ namespace db {
 			return true;
 		}
 
-		template<typename RelationKey>
-		inline Tuple dumpAttribute(const RelationKey &rkey, const string &name, size_t pos) {
+		template<typename RelationKey, typename AttributeKey>
+		inline Tuple dumpAttribute(const RelationKey &rkey, const AttributeKey &akey) {
 			auto rpos = relationPos(rkey);
 			if (rpos == _relations.size()) {
 				throw std::runtime_error("[Schema::dumpRelation]");
 			}
 			auto &r = relation(rpos);
-			if (pos == r._attributes.size()) {
+			auto apos = r.attributePos(akey);
+			if (apos == r._attributes.size()) {
 				throw std::runtime_error("[Schema::dumpRelation]");
 			}
-			auto &a = r.attribute(pos);
+			auto &a = r.attribute(apos);
 			return relation(ATTRIBUTE_META_POS).builder(true)
 				.build(0, static_cast<int_t>(rpos))
-				.build(1, static_cast<string>(name))
-				.build(2, static_cast<int_t>(pos))
+				.build(1, static_cast<string>(a.name()))
+				.build(2, static_cast<int_t>(apos))
 				.build(3, static_cast<int_t>(a._type))
 				.build(4, static_cast<int_t>(a._size))
 				.build(5, static_cast<int_t>(a._offset))
@@ -700,18 +736,8 @@ namespace db {
 				.complete();
 		}
 
-		template<typename RelationKey>
-		inline Tuple dumpAttribute(const RelationKey &rkey, const string &name) {
-			auto rpos = relationPos(rkey);
-			if (rpos == _relations.size()) {
-				throw std::runtime_error("[Schema::dumpRelation]");
-			}
-			auto &r = relation(rpos);
-			return dumpAttribute(rpos, name, r.attributePos(name));
-		}
-
-		inline bool createRelation(const string &name, Relation &&relation) {
-			if (!relation.isFormatted() || _relationNames.find(name) != _relationNames.end()) {
+		inline bool createRelation(Relation &&relation) {
+			if (!relation.isFormatted() || _relationNames.find(relation.name()) != _relationNames.end()) {
 				return false;
 			}
 			size_t i = 0;
@@ -721,7 +747,7 @@ namespace db {
 				}
 				++i;
 			}
-			if (_relationNames.try_emplace(name, i).second) {
+			if (_relationNames.try_emplace(relation.name(), i).second) {
 				if (i == _relations.size()) {
 					_relations.emplace_back(new Relation(std::move(relation)));
 				} else {

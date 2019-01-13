@@ -163,6 +163,7 @@
     <ClInclude Include="page.hpp" />
     <ClInclude Include="pch.h" />
     <ClInclude Include="definitions.hpp" />
+    <ClInclude Include="query.hpp" />
     <ClInclude Include="relation.hpp" />
     <ClInclude Include="translator.hpp" />
     <ClInclude Include="relation_guard.hpp" />

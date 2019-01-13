@@ -5,6 +5,7 @@
 #include "relation_guard.hpp"
 // #include "index_guard.hpp"
 
+#include <functional>
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -67,7 +68,7 @@ namespace db {
 					if (p.second <= Schema::INDEX_META_POS) {
 						continue;
 					}
-					auto tuple = std::move(_schema.dumpRelation(p.first, p.second));
+					auto tuple = std::move(_schema.dumpRelation(p.second));
 					auto addr = relationAddresses[p.second];
 					if (addr) {
 						_relationMetaGuard.reallocate(addr, tuple);
@@ -94,7 +95,7 @@ namespace db {
 							throw std::runtime_error("[MetaGuard::dump]");
 						}
 						auto addr = iter->second;
-						auto tuple = std::move(_schema.dumpAttribute(rp.second, ap.first, ap.second));
+						auto tuple = std::move(_schema.dumpAttribute(rp.second, ap.second));
 						_attributeMetaGuard.reallocate(addr, tuple);
 					}
 				}
@@ -123,11 +124,12 @@ namespace db {
 			}
 		}
 
-		inline bool createRelation(const string &name, Relation &&relation) {
+		inline bool createRelation(Relation &&relation) {
+			auto name = relation.name();
 			if (!relation.isFormatted()) {
 				return false;
 			}
-			if (!_schema.createRelation(name, std::move(relation))) {
+			if (!_schema.createRelation(std::move(relation))) {
 				return false;
 			}
 			{
@@ -137,7 +139,7 @@ namespace db {
 			auto rpos = _schema.relationPos(name);
 			auto &r = _schema.relation(rpos);
 			for (auto p : r._attributeNames) {
-				auto tuple = _schema.dumpAttribute(rpos, p.first, p.second);
+				auto tuple = _schema.dumpAttribute(rpos, p.second);
 				_attributeMetaGuard.allocate(tuple);
 			}
 			return true;
@@ -217,14 +219,15 @@ namespace db {
 			_metaGuard.dump();
 		}
 
-		bool createRelation(const string &name, Relation &&relation) {
+		bool createRelation(Relation &&relation) {
 			for (auto i = DATA_SEG_BEGIN; i != DATA_SEG_END; i += SEGMENT_SIZE) {
 				auto &param = _keeper.param(i);
 				if (param < 8) {
 					relation._capacity = DATA_CAPACITY;
 					relation._ptr = relation._begin = relation._end = i + param * DATA_CAPACITY;
 					++param;
-					if (_metaGuard.createRelation(name, std::move(relation))) {
+					auto name = relation.name();
+					if (_metaGuard.createRelation(std::move(relation))) {
 						auto res = _relationGuards.try_emplace(name, new RelationGuard(_keeper, _metaGuard._schema.relation(name)));
 						if (res.second) {
 							return true;
