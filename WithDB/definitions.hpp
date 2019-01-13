@@ -55,6 +55,8 @@ namespace db {
 		BLOB_T,
 		CLOB_T,
 		NTBS_T, // null-terminate byte string (used in literal, ensure '\0' is not in the string and will find '\0' certainly at the end of string), other has 2 bound
+		ATTRIBUTE_T, // claim it is a attribute
+		RELATION_T, // claim it is a relation
 	};
 
 	enum segment_enum {

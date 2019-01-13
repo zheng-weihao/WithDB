@@ -534,6 +534,13 @@ namespace db {
 			return (rpos << 32) | apos;
 		}
 
+		constexpr static size_t getRelationFromKey(size_t key) {
+			return getFlag(key, 32, 64);
+		}
+		constexpr static size_t getAttributeFromKey(size_t key) {
+			return getFlag(key, 0, 32);
+		}
+
 		std::vector<Relation *> _relations; // _fixedSize, _maxSize
 		std::unordered_map<string, size_t> _relationNames; // attribute name-index map // TODO: might remove
 		std::unordered_map<size_t, address> _indexes;
@@ -761,8 +768,8 @@ namespace db {
 				throw std::runtime_error("[Schema::dumpIndex]");
 			}
 			return relation(INDEX_META_POS).builder(true)
-				.build(0, static_cast<int_t>(getFlag(key, 32, 64)))
-				.build(1, static_cast<int_t>(getFlag(key, 0, 32)))
+				.build(0, static_cast<int_t>(getRelationFromKey(key)))
+				.build(1, static_cast<int_t>(getAttributeFromKey(key)))
 				.build(2, static_cast<long_t>(iter->second))
 				.complete();
 		}

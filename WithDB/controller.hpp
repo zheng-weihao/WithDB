@@ -280,6 +280,21 @@ namespace db {
 			return relationGuard(key).allocate(tuple);
 		}
 
+		/*void unionOp();
+		void diffOp();
+		void intersectOp();
+		void selectOp();
+		void projectOp();
+		void productOp();
+		void renameOp();
+		void joinOp();
+		void groupOp();
+		void distinctOp();
+
+		void insertOp();
+		void updateOp();
+		void deleteOp();*/
+
 		/*void createIndex(std::string relationName, size_t index) {
 			address ptr = 0;
 			auto type = _relations[relationName]->_relation._attributes[index]._type;

@@ -115,10 +115,6 @@ namespace db {
 			return true;
 		}
 
-		inline void receive(TuplePage &&other) {
-			operator=(std::move(other));
-		}
-
 		inline void init() {
 			_used = HEADER_SIZE;
 			_front = HEADER_SIZE;
@@ -449,20 +445,5 @@ namespace db {
 				}
 			});
 		}
-
-		/*void unionOp();
-		void diffOp();
-		void intersectOp();
-		void selectOp();
-		void projectOp();
-		void productOp();
-		void renameOp();
-		void joinOp();
-		void groupOp();
-		void distinctOp();
-
-		void insertOp();
-		void updateOp();
-		void deleteOp();*/
 	};
 }

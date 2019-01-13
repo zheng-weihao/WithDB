@@ -127,6 +127,9 @@ namespace db {
 			}
 
 			inline VirtualPage &operator=(VirtualPage &&other) {
+				if (&_keeper != &other._keeper) {
+					throw std::runtime_error("[VirtualPage::operator=]");
+				}
 				Page::operator=(std::move(other));
 				_addr = other._addr;
 				_flags = other._flags;
@@ -170,8 +173,6 @@ namespace db {
 			inline bool pin() { return cache().pin(_addr) && (setPin(true), true); }
 
 			inline bool unpin() { return cache().unpin(_addr) && (setPin(false), true); }
-
-			inline void receive(VirtualPage &&other) { operator=(std::move(other)); } // consider change to operator=
 		};
 
 		// wrapper manage only in a procedure, not thread-safe
@@ -225,11 +226,11 @@ namespace db {
 					auto flags = ptr->_flags;
 					setAutoload(flags, false);
 					setPin(flags, true);
-					auto tmp = ptr->_keeper.hold<Derived>(ptr->_addr, flags); // TODO: async collect function to replace code here (avoid data move)
+					auto tmp = ptr->_keeper.hold<Derived>(ptr->_addr, flags); // TODO: write async collect function to replace code here (avoid data move)
 					if (!tmp) {
 						return false;
 					}
-					tmp->receive(std::move(*ptr));
+					*tmp = std::move(*ptr); // this one, we can set cache.ptrs with ptr if page miss, and throw exception when hit with collect
 					Super::operator=(std::move(tmp));
 				}
 				return true;

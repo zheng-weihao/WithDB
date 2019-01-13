@@ -152,11 +152,6 @@ namespace db {
 		virtual bool dump() {
 			return true;
 		}
-
-		// receive page loaded upper data structure from other page
-		void receive(BasicPage &&other) {
-			operator=(std::move(other));
-		}
 	};
 
 	namespace ns::page {
@@ -297,7 +292,8 @@ namespace db {
 					// TODO: I think static cast is enough in this case (mostly Cache only contains the same type of derived page), and dynamic cast might limit our ability, need a better consideration
 					auto tmp = std::static_pointer_cast<Derived>(_ptrs[index]);
 					if (ptr) {
-						tmp->receive(std::move(*ptr));
+						throw std::runtime_error("[Cache::collect]page hit conflict");
+						*tmp = std::move(*ptr); // TODO: conflict, throw exception
 					}
 					ptr = std::move(tmp);
 					return true;
