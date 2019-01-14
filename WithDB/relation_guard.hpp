@@ -346,12 +346,13 @@ namespace db {
 				end = SIZE_HYPER * PAGE_SIZE + begin;
 				size = end - begin;
 			}
-			bool sweepFlag = size - size / SIZE_HYPER < _relation._pCount;
+			bool sweepFlag = size - size / SIZE_HYPER < _relation._pCount * PAGE_SIZE;
 			for (address i = 0; i != size; ++i) {
 				auto p = _keeper.hold<TuplePage>(ptr, false, false, false);
 				if (!p->load()) {
 					p->init(); // will also be modified by copy_from (allocate must succeed), so don't have to dump now
 					++_relation._pCount;
+					sweepFlag = size - size / SIZE_HYPER < _relation._pCount * PAGE_SIZE;
 				}
 				auto result = p->allocate(static_cast<page_address>(tuple.size()), sweepFlag);
 				if (result != p->_entries.size()) {
@@ -368,7 +369,7 @@ namespace db {
 					if (sweepFlag && size != _relation._capacity) {
 						size = std::max(pageAddress(size + size / SIZE_HYPER), _relation._capacity);
 						end = begin + size;
-						sweepFlag = size - size / SIZE_HYPER < _relation._pCount;
+						sweepFlag = size - size / SIZE_HYPER < _relation._pCount * PAGE_SIZE;
 					} else {
 						ptr = begin;
 					}

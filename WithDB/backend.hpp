@@ -3,6 +3,9 @@
 #include "controller.hpp"
 #include "executor.hpp"
 
+#include <fstream>
+#include <sstream>
+
 namespace db {
 	struct Backend {
 		Controller _controller;
@@ -57,6 +60,64 @@ namespace db {
 			std::cout << "print relation: foo" << std::endl;
 			_controller.printAll("foo");
 			return true;
+		}
+
+		template<typename Key>
+		bool loadFile(const string &path, const Key &relation, bool log = false) {
+			std::fstream fs(path);
+			string row;
+			size_t success = 0;
+			size_t total = 0;
+			auto builder = _controller.relation(relation).builder();
+			while (std::getline(fs, row)) {
+				try {
+					std::stringstream ss(row);
+					size_t i = 0;
+					string value;
+					builder.start();
+					while (std::getline(ss, value, '|')) {
+						builder.build(i, value);
+					}
+					auto tuple = builder.complete();
+					auto ret = _controller.createTuple(relation, tuple);
+					if (log) {
+						std::cerr << "put tuple " << total <<" in address " << ret << std::endl;
+					}
+					++success;
+				} catch (const std::runtime_error &e) {
+					e.what();
+				}
+				++total;
+			}
+			if (log) {
+				std::cerr << "load file success in " << relation << ", statistic = " << success << "/" << total << std::endl;
+			}
+			return success == total;
+		}
+
+		template<typename Key>
+		bool dumpFile(const string &path, const Key &relation, bool log = false) {
+			std::fstream fs(path, std::ios::out);
+			string row;
+			size_t success = 0;
+			size_t total = 0;
+			_controller.relationGuard(key).traverseTuple([&fs, &success, &total](Tuple &tuple, address) {
+				auto size = tuple._relation.attributeSize()
+				for (size_t i = 0; i != size); ++i) {
+					fs << tuple.get<string>(i);
+					if (i == size - 1) {
+						fs << std::endl;
+					} else {
+						fs << '|';
+					}
+				}
+				++success;
+				++total;
+			});
+			if (log) {
+				std::cerr << "dump file success with " << relation << ", statistic = " << success << "/" << total << std::endl;
+			}
+			return success == total;
 		}
 	};
 }
