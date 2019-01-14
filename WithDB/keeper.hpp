@@ -206,6 +206,7 @@ namespace db {
 				Super::operator=(std::move(other));
 				_tmp = other._tmp;
 				other._tmp = false;
+				return *this;
 			}
 			
 			inline bool isPinned() { return Super::get()->isPinned(); }

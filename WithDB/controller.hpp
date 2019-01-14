@@ -460,7 +460,7 @@ namespace db {
 		}
 
 		template<typename Key>
-		inline address createTuple(const Key & key, Tuple &tuple) {
+		inline address createTuple(const Key &key, Tuple &tuple) {
 			return relationGuard(key).allocate(tuple);
 		}
 
